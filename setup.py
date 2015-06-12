@@ -31,7 +31,7 @@ setup(
     version="0.0.1",
     author="Fernando Serena",
     author_email="fernando.serena@centeropenmiddleware.com",
-    description="An Agora client for Python that requests and executes search plans for a graph pattern",
+    description="An Agora client for Python that requests and executes search plans for graph patterns",
     license="Apache 2",
     keywords="agora linked-data search-plan",
     url="http://smartdeveloperhub.org",
