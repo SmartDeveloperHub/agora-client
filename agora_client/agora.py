@@ -60,7 +60,7 @@ class Agora(object):
 
     def __get_gp_plan(self, gp):
         query = urlencode({'gp': gp})
-        response = requests.get('{}/plan?'.format(self.__planner) + query)
+        response = requests.get('{}/plan?'.format(self.__planner) + query, headers={'Accept': 'text/turtle'})
         graph = Graph()
         graph.parse(source=StringIO.StringIO(response.text), format='turtle')
         return graph
@@ -69,6 +69,15 @@ class Agora(object):
                                on_type_validation=None, on_tree=None):
         cache_graph = ConjunctiveGraph()
         cache = []
+        spaces_dict = {}
+
+        def __decorate_nodes(nodes, space):
+            for n in nodes:
+                if n not in spaces_dict:
+                    spaces_dict[n] = set([])
+                spaces_dict[n].add(space)
+                pred_nodes = graph.subjects(AGORA.next, n)
+                __decorate_nodes(pred_nodes, space)
 
         def load_uri(graph, uri):
             loaded = False
@@ -89,17 +98,33 @@ class Agora(object):
                     on_load(uri, triples)
 
         graph = self.__get_gp_plan(gp)
-        sps = set(graph.objects(predicate=AGORA.inSearchSpace))
+        sps = set(graph.subjects(RDF.type, AGORA.SearchSpace))
         subjects_to_clear = {}
         for sp in sps:
             subjects_to_clear[sp] = set([])
 
+        patterns_dict = {}
+        patterns = list(graph.subjects(RDF.type, AGORA.TriplePattern))
+        for tp in patterns:
+            patterns_dict[tp] = {}
+            space = list(graph.subjects(AGORA.definedBy, tp)).pop()
+            patterns_dict[tp]['space'] = space
+            tp_pred = list(graph.objects(tp, predicate=AGORA.predicate)).pop()
+            if tp_pred == RDF.type:
+                patterns_dict[tp]['type'] = list(graph.objects(tp, predicate=AGORA.object)).pop()
+            else:
+                patterns_dict[tp]['property'] = tp_pred
+                tp_obj = list(graph.objects(tp, predicate=AGORA.object)).pop()
+                if (tp_obj, RDF.type, AGORA.Literal) in graph:
+                    patterns_dict[tp]['filter'] = list(graph.objects(tp_obj, AGORA.value)).pop()
+
+            nodes = graph.subjects(AGORA.byPattern, tp)
+            __decorate_nodes(nodes, space)
+
         def follow_tree(node, tree_graph, objs=None):
             def order_func(x):
                 p_node = list(graph.objects(subject=x, predicate=AGORA.byPattern))
-                if len(p_node):
-                    return len(list(graph.objects(subject=p_node.pop(), predicate=AGORA.objectFilter)))
-                return 0
+                return len(p_node) and 'filter' in patterns_dict[p_node.pop()]
 
             nxt = list(graph.objects(node, AGORA.next))
             nxt = sorted(nxt, key=lambda x: order_func(x),
@@ -109,25 +134,23 @@ class Agora(object):
                 pattern_node = None
                 try:
                     pattern_node = list(graph.objects(subject=n, predicate=AGORA.byPattern)).pop()
-                    pattern_link = list(graph.objects(subject=pattern_node, predicate=AGORA.patternProperty)).pop()
-                except IndexError:
+                    pattern_link = patterns_dict[pattern_node]['property']
+                except (IndexError, KeyError):
                     pattern_link = None
 
                 try:
                     link = list(graph.objects(subject=n, predicate=AGORA.onProperty)).pop()
-                    search_spaces = list(graph.objects(subject=n, predicate=AGORA.inSearchSpace))
+                    search_spaces = spaces_dict[n]
                 except IndexError:
                     link = None
                     search_spaces = []
 
+                obj_filter = None
+                obj_type = None
                 if pattern_node is not None:
-                    obj_filters = map(lambda x: str(x), list(graph.objects(subject=pattern_node,
-                                                                           predicate=AGORA.objectFilter)))
-                    pattern_space = list(graph.objects(subject=pattern_node, predicate=AGORA.inSearchSpace)).pop()
-                    obj_types = list(graph.objects(subject=pattern_node, predicate=AGORA.patternType))
-                else:
-                    obj_filters = []
-                    obj_types = []
+                    obj_filter = patterns_dict[pattern_node].get('filter', None)
+                    obj_type = patterns_dict[pattern_node].get('type', None)
+                    pattern_space = patterns_dict[pattern_node]['space']
 
                 cp_objs = {}
 
@@ -142,7 +165,7 @@ class Agora(object):
                         load_uri(tree_graph, obj_s)
                         link_objs = list(tree_graph.objects(subject=obj_s, predicate=pattern_link))
                         for lo in link_objs:
-                            if not len(obj_filters) or str(lo) in obj_filters:
+                            if obj_filter is None or str(lo) == str(obj_filter):
                                 cp_objs[pattern_space].add(lo)
                                 yield (obj_s, pattern_link, lo)
                             else:
@@ -162,18 +185,17 @@ class Agora(object):
                             for lo in link_objs:
                                 cp_objs[sp].add(lo)
 
-                if len(obj_types):
+                if obj_type is not None:
                     cp_prev_objs = filter(lambda x: x not in subjects_to_clear[pattern_space], objs[pattern_space])
                     if pattern_space not in cp_objs:
                         cp_objs[pattern_space] = set([])
                     if on_type is not None:
-                            on_type(obj_types[0], cp_prev_objs, pattern_space)
+                            on_type(obj_type, cp_prev_objs, pattern_space)
                     for obj_s in cp_prev_objs:
                         load_uri(tree_graph, obj_s)
                         link_objs = list(tree_graph.objects(subject=obj_s, predicate=link))
                         for obj in link_objs:
-                            for obj_type in obj_types:
-                                yield (obj, RDF.type, obj_type)
+                            yield (obj, RDF.type, obj_type)
 
                 if len(filter(lambda x: len(cp_objs[x]), cp_objs.keys())):
                     for yt in follow_tree(n, tree_graph, cp_objs):
