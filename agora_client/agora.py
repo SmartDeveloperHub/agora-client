@@ -136,11 +136,8 @@ class FragmentCollector(object):
         """
         gen, namespaces, plan = self.get_fragment_generator()
         graph = ConjunctiveGraph()
-        for (prefix, u) in namespaces:
-            graph.bind(prefix, u)
-
-        for tp in gen:
-            graph.add(tp)
+        [graph.bind(prefix, u) for (prefix, u) in namespaces]
+        [graph.add(tp) for tp in gen]
 
         return graph
 
@@ -158,15 +155,14 @@ class FragmentCollector(object):
             loaded = False
             if uri not in self.__uri_cache:
                 try:
-                    self.__cache_graph.get_context(uri).load(uri)
+                    self.__cache_graph.get_context(uri).load(uri, format='turtle')
                     self.__uri_cache.append(uri)
                     loaded = True
                 except Exception:
                     pass
 
             triples = list(self.__cache_graph.get_context(uri).triples((None, None, None)))
-            for t in triples:
-                tg.get_context(uri).add(t)
+            [tg.get_context(uri).add(t) for t in triples]
 
             if loaded:
                 if on_load is not None:
@@ -248,10 +244,7 @@ class FragmentCollector(object):
                     for sp in search_spaces:
                         if sp not in cp_objs:
                             cp_objs[sp] = set([])
-                        # if pattern_link is not None:
                         cp_prev_objs = filter(lambda x: x not in self.__subjects_to_clear[sp], objs[sp])
-                        # else:
-                        #     cp_prev_objs = objs[sp].copy()
                         if on_link is not None:
                             on_link(link, cp_prev_objs, sp)
                         for obj_s in cp_prev_objs:
