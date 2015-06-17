@@ -91,7 +91,7 @@ agora = Agora(PLANNER)
 #               ?r dc:created ?y.}"""
 
 # pattern = """{?s a sdh:Commit}"""
-pattern = """{?s a sdh:Project . ?s foaf:name "CKAN". ?s sdh:hasCommits ?cc. ?cc sdh:commits ?c.}"""
+pattern = """{?m a scm:Merge}"""
 
 if len(sys.argv) > 1:
     pattern = sys.argv[1]
