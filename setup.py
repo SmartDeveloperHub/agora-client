@@ -28,16 +28,16 @@ from setuptools import setup, find_packages
 
 setup(
     name="Agora-Client",
-    version="0.0.1",
+    version="0.1.0",
     author="Fernando Serena",
     author_email="fernando.serena@centeropenmiddleware.com",
     description="An Agora client for Python that requests and executes search plans for graph patterns",
     license="Apache 2",
-    keywords="agora linked-data search-plan",
-    url="http://smartdeveloperhub.org",
-    namespace_packages=['agora_client'],
+    keywords=["agora", "linked-data", "search-plan"],
+    url="https://github.com/smartdeveloperhub/agora-client",
+    download_url="https://github.com/smartdeveloperhub/agora-client/tarball/0.1.0",
     packages=find_packages(exclude=['ez_setup', 'examples', 'tests']),
-    include_package_data=True,
     install_requires=['requests', 'rdflib'],
     classifiers=[],
+    scripts=['agora-cli']
 )
