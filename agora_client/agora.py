@@ -38,6 +38,12 @@ AGORA = Namespace('http://agora.org#')
 
 
 def __extend_uri(prefixes, short):
+    """
+    Extend a prefixed uri with the help of a specific dictionary of prefixes
+    :param prefixes: Dictionary of prefixes
+    :param short: Prefixed uri to be extended
+    :return:
+    """
     for prefix in prefixes:
         if short.startswith(prefix):
             return short.replace(prefix + ':', prefixes[prefix])
@@ -45,20 +51,35 @@ def __extend_uri(prefixes, short):
 
 
 class Agora(object):
+    """
+    Wrapper class for the FragmentCollector
+    """
+
     def __init__(self, host):
         self.__host = host
 
     def get_fragment(self, gp):
+        """
+        Return a complete fragment for a given gp.
+        :param gp: A graph pattern
+        :return:
+        """
         collector = FragmentCollector(self.__host, gp)
         return collector.get_fragment()
 
     def get_fragment_generator(self, gp, **kwargs):
+        """
+        Return a fragment generator for a given gp.
+        :param gp:
+        :param kwargs:
+        :return:
+        """
         collector = FragmentCollector(self.__host, gp)
         return collector.get_fragment_generator(**kwargs)
 
 
 class FragmentCollector(object):
-    """ Class for interacting with the Agora planner and executing the plans for a certain graph pattern
+    """ Class for interacting with the Agora planner and executing the plans for a certain graph pattern.
     """
 
     def __init__(self, planner_uri, gp):
@@ -66,17 +87,19 @@ class FragmentCollector(object):
         self.__cache_graph = ConjunctiveGraph()
         self.__uri_cache = []
         self.__graph_pattern = gp
-        self.__plan_graph = self.__get_gp_plan(self.__graph_pattern)
         self.__node_spaces = {}
+        self.__node_patterns = {}
         self.__spaces = None
         self.__patterns = {}
-        self.__subjects_to_clear = {}
+        self.__subjects_to_ignore = {}
 
+        # Request a search plan on initialization and extract patterns and spaces
+        self.__plan_graph = self.__get_gp_plan(self.__graph_pattern)
         self.__extract_patterns_and_spaces()
 
     def __get_gp_plan(self, gp):
         """
-        Request the planner a search plan for a given gp and returns the plan as a graph
+        Request the planner a search plan for a given gp and returns the plan as a graph.
         :param gp:
         :return:
         """
@@ -87,6 +110,12 @@ class FragmentCollector(object):
         return graph
 
     def __extract_patterns_and_spaces(self):
+        """
+        Analyses the search plan graph in order to build the required data structures from patterns
+        and spaces.
+        :return:
+        """
+
         def __decorate_nodes(nodes, space):
             """
             Performs a backward search from a list of pattern nodes and assigns a set of search spaces
@@ -102,35 +131,47 @@ class FragmentCollector(object):
                 pred_nodes = self.__plan_graph.subjects(AGORA.next, n)
                 __decorate_nodes(pred_nodes, space)
 
+        # Extract all search spaces in the plan and build a dictionary of subjects-to-ignore per each of them.
+        # Ignored subjects are those that won't be dereferenced due to a explicit graph pattern (object) filter,
+        # e.g. ?s doap:name "jenkins" -> All ?s that don't match the filter will be ignored.
         self.__spaces = set(self.__plan_graph.subjects(RDF.type, AGORA.SearchSpace))
-        for sp in self.__spaces:
-            self.__subjects_to_clear[sp] = set([])
+        self.__subjects_to_ignore = dict([(sp, set([])) for sp in self.__spaces])
 
         patterns = list(self.__plan_graph.subjects(RDF.type, AGORA.TriplePattern))
         for tp in patterns:
-            self.__patterns[tp] = {'spaces': set([])}
+            # A triple pattern belongs to a UNIQUE search space
             space = list(self.__plan_graph.subjects(AGORA.definedBy, tp)).pop()
-            self.__patterns[tp]['space'] = space
+            self.__patterns[tp] = {'space': space}
+
+            # Depending on the format of each triple pattern (either '?s a Concept' or '?s prop O'),
+            # it is required to extract different properties.
             tp_pred = list(self.__plan_graph.objects(tp, predicate=AGORA.predicate)).pop()
-            if tp_pred == RDF.type:
+
+            if tp_pred == RDF.type:  # ?s a Concept
                 self.__patterns[tp]['type'] = list(self.__plan_graph.objects(tp, predicate=AGORA.object)).pop()
                 try:
                     check_type = list(self.__plan_graph.objects(tp, predicate=AGORA.checkType)).pop().toPython()
                 except IndexError:
-                    check_type = False
+                    check_type = True
                 self.__patterns[tp]['check'] = check_type
-            else:
+            else:  # ?s prop O
                 self.__patterns[tp]['property'] = tp_pred
                 tp_obj = list(self.__plan_graph.objects(tp, predicate=AGORA.object)).pop()
-                if (tp_obj, RDF.type, AGORA.Literal) in self.__plan_graph:
+                if (tp_obj, RDF.type, AGORA.Literal) in self.__plan_graph:  # In case O is a Literal
                     self.__patterns[tp]['filter'] = list(self.__plan_graph.objects(tp_obj, AGORA.value)).pop()
 
-            nodes = self.__plan_graph.subjects(AGORA.byPattern, tp)
+            # Get all pattern nodes (those that have a byPattern properties) of the search plan and search backwards
+            # in order to set the scope of each search space.
+            nodes = list(self.__plan_graph.subjects(AGORA.byPattern, tp))
+            for n in nodes:
+                if n not in self.__node_patterns:
+                    self.__node_patterns[n] = set([])
+                self.__node_patterns[n].add(tp)
             __decorate_nodes(nodes, space)
 
     def get_fragment(self):
         """
-        Return a complete fragment for a given gp
+        Return a complete fragment.
         :param gp:
         :return:
         """
@@ -143,12 +184,23 @@ class FragmentCollector(object):
 
     def get_fragment_generator(self, on_load=None, on_seeds=None, on_plink=None, on_link=None, on_type=None,
                                on_type_validation=None, on_tree=None):
+        """
+        Create a fragment generator that executes the search plan.
+        :param on_load: Function to be called just after a new URI is dereferenced
+        :param on_seeds: Function to be called just after a seed of a tree is identified
+        :param on_plink: Function to be called when a pattern link is reached
+        :param on_link: Function to be called when following a property that is not of a pattern
+        :param on_type: Function to be called when search for a type triple
+        :param on_type_validation: Function to be called just after a type is validated
+        :param on_tree: Function to be called just before a tree is going to be explored
+        :return:
+        """
 
         def __dereference_uri(tg, uri):
             """
-            Load in a tree graph the set of triples contained in uri, trying to not deference the same uri more than once
-            in the context of a search  plan execution
-            :param graph: The graph to be loaded with all the triples obtained from uri
+            Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
+            more than once in the context of a search plan execution
+            :param tg: The graph to be loaded with all the triples obtained from uri
             :param uri: A resource uri to be dereferenced
             :return:
             """
@@ -161,147 +213,171 @@ class FragmentCollector(object):
                 except Exception:
                     pass
 
+            # Copy the triples contained in the cache graph to the tree graph given as a parameter
             triples = list(self.__cache_graph.get_context(uri).triples((None, None, None)))
             [tg.get_context(uri).add(t) for t in triples]
 
-            if loaded:
-                if on_load is not None:
-                    on_load(uri, triples)
+            if loaded and on_load is not None:
+                on_load(uri, triples)
 
-        def __follow_tree(node, tree_graph, objs=None):
-            def order_func(x):
+        def __follow_node(node, tree_graph, node_seeds=None):
+            """
+            Recursively search for relevant triples following the current node and all its successors
+            :param node: Tree node to be followed
+            :param tree_graph:
+            :param node_seeds: Set of collected seeds for the current node
+            :return:
+            """
+
+            def node_has_filter(x):
+                """
+                Check if a node is a pattern node and has an object filter
+                """
                 p_node = list(self.__plan_graph.objects(subject=x, predicate=AGORA.byPattern))
                 return len(p_node) and 'filter' in self.__patterns[p_node.pop()]
 
-            nxt = list(self.__plan_graph.objects(node, AGORA.next))
-            nxt = sorted(nxt, key=lambda x: order_func(x),
-                         reverse=True)
+            # Get the sorted list of current node's successors
+            nxt = sorted(list(self.__plan_graph.objects(node, AGORA.next)),
+                         key=lambda x: node_has_filter(x), reverse=True)
 
+            # Per each successor...
             for n in nxt:
+                # Get all its search spaces and pattern nodes (if any)
                 search_spaces = self.__node_spaces[n]
-                pattern_nodes = list(self.__plan_graph.objects(subject=n, predicate=AGORA.byPattern))
+                node_patterns = self.__node_patterns.get(n, [])
 
+                # In case the node is not a leaf, 'onProperty' tells which is the next link to follow
                 try:
                     link = list(self.__plan_graph.objects(subject=n, predicate=AGORA.onProperty)).pop()
                 except IndexError:
                     link = None
 
-                cp_objs = {}
+                next_seeds = dict([(sp, set([])) for sp in search_spaces])
 
-                for pattern_node in pattern_nodes:
-                    try:
-                        obj_filter = self.__patterns[pattern_node].get('filter', None)
-                        obj_type = self.__patterns[pattern_node].get('type', None)
-                        pattern_space = self.__patterns[pattern_node].get('space', None)
-                        check_type = self.__patterns[pattern_node].get('check', False)
-                        pattern_link = self.__patterns[pattern_node].get('property', None)
-                    except IndexError:
-                        pattern_node = None
-                        pattern_link = None
-                        pattern_space = None
-                        obj_filter = None
-                        obj_type = None
-                        check_type = False
+                # If the current node is a pattern node, it must search for triples to yield
+                for pattern in node_patterns:
+                    pattern_space = self.__patterns[pattern].get('space', None)
+                    pattern_link = self.__patterns[pattern].get('property', None)
+                    filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[pattern_space],
+                                            node_seeds[pattern_space])
 
+                    # If pattern is of type '?s prop O'...
                     if pattern_link is not None:
-                        cp_objs[pattern_space] = set([])
-                        cp_prev_objs = filter(lambda x: x not in self.__subjects_to_clear[pattern_space],
-                                              objs[pattern_space])
+                        obj_filter = self.__patterns[pattern].get('filter', None)
                         if on_plink is not None:
-                            on_plink(pattern_link, cp_prev_objs, pattern_space)
+                            on_plink(pattern_link, filtered_seeds, pattern_space)
 
-                        for obj_s in cp_prev_objs:
-                            __dereference_uri(tree_graph, obj_s)
-                            link_objs = list(tree_graph.objects(subject=obj_s, predicate=pattern_link))
-                            for lo in link_objs:
-                                if obj_filter is None or str(lo) == str(obj_filter):
-                                    cp_objs[pattern_space].add(lo)
-                                    yield (obj_s, pattern_link, lo)
+                        for seed in filtered_seeds:
+                            __dereference_uri(tree_graph, seed)
+                            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=pattern_link))
+                            for seed_object in seed_pattern_objects:
+                                if obj_filter is None or str(seed_object) == str(obj_filter):
+                                    yield (seed, pattern_link, seed_object)
                                 else:
-                                    self.__subjects_to_clear[pattern_space].add(obj_s)
+                                    self.__subjects_to_ignore[pattern_space].add(seed)
 
+                    # If pattern is of type '?s a Concept'...
+                    obj_type = self.__patterns[pattern].get('type', None)
                     if obj_type is not None:
-                        cp_prev_objs = filter(lambda x: x not in self.__subjects_to_clear[pattern_space],
-                                              objs[pattern_space])
-                        if pattern_space not in cp_objs:
-                            cp_objs[pattern_space] = set([])
+                        check_type = self.__patterns[pattern].get('check', False)
                         if on_type is not None:
-                            on_type(obj_type, cp_prev_objs, pattern_space)
-                        for obj_s in cp_prev_objs:
-                            __dereference_uri(tree_graph, obj_s)
-                            link_objs = list(tree_graph.objects(subject=obj_s, predicate=link))
-                            for obj in link_objs:
-                                type_triple = (obj, RDF.type, obj_type)
+                            on_type(obj_type, filtered_seeds, pattern_space)
+
+                        for seed in filtered_seeds:
+                            __dereference_uri(tree_graph, seed)
+                            # 'link' should be None!
+                            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
+                            for seed_object in seed_pattern_objects:
+                                type_triple = (seed_object, RDF.type, obj_type)
+                                # In some cases, it is necessary to verify the type of the seed
                                 if check_type:
-                                    __dereference_uri(tree_graph, obj)
-                                    types = list(tree_graph.objects(subject=obj, predicate=RDF.type))
+                                    __dereference_uri(tree_graph, seed_object)
+                                    types = list(tree_graph.objects(subject=seed_object, predicate=RDF.type))
                                     if obj_type in types:
                                         yield type_triple
                                 else:
-                                    yield (obj, RDF.type, obj_type)
+                                    yield type_triple
 
+                # If the current node is not a leaf... go on finding seeds for the successors
                 if link is not None:
                     for sp in search_spaces:
-                        if sp not in cp_objs:
-                            cp_objs[sp] = set([])
-                        cp_prev_objs = filter(lambda x: x not in self.__subjects_to_clear[sp], objs[sp])
+                        filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[sp], node_seeds[sp])
                         if on_link is not None:
-                            on_link(link, cp_prev_objs, sp)
-                        for obj_s in cp_prev_objs:
-                            __dereference_uri(tree_graph, obj_s)
-                            link_objs = list(tree_graph.objects(subject=obj_s, predicate=link))
-                            for lo in link_objs:
-                                cp_objs[sp].add(lo)
+                            on_link(link, filtered_seeds, sp)
+                        for seed in filtered_seeds:
+                            __dereference_uri(tree_graph, seed)
+                            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
+                            for seed_object in seed_pattern_objects:
+                                next_seeds[sp].add(seed_object)
 
-                if filter(lambda x: len(cp_objs[x]), cp_objs.keys()):
-                    for yt in __follow_tree(n, tree_graph, cp_objs):
+                if filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
+                    for yt in __follow_node(n, tree_graph, next_seeds):
                         yield yt
 
-        def filter_triples():
-            def order_func(x):
+        def get_fragment_triples():
+            """
+            Iterate over all search trees and yield relevant triples
+            :return:
+            """
+
+            def get_tree_length(x):
+                """
+                Return the value of the Agora length property in the given tree node
+                :param x:
+                :return:
+                """
                 length = list(self.__plan_graph.objects(subject=x, predicate=AGORA.length)).pop()
                 return length
 
+            # Get all search trees contained in the search plan and sort them by length. A shorter tree is going
+            # to be explored first.
             trees = self.__plan_graph.subjects(RDF.type, AGORA.SearchTree)
-            trees = sorted(trees, key=lambda x: order_func(x))
+            trees = sorted(trees, key=lambda x: get_tree_length(x))
 
             for tree in trees:
                 if on_tree is not None:
                     on_tree(tree)
-                type_triples = set([])
+
+                # Prepare an dedicated graph for the current tree and a set of type triples (?s a Concept)
+                # to be evaluated retrospectively
                 tree_graph = ConjunctiveGraph()
+                type_triples = set([])
+
+                # Get all seeds of the current tree
                 seeds = list(self.__plan_graph.objects(tree, AGORA.hasSeed))
                 if on_seeds is not None:
                     on_seeds(seeds)
 
+                # Check if the tree root is a pattern node and in that case, adds a type triple to the
+                # respective set
                 root_pattern = list(self.__plan_graph.objects(tree, AGORA.byPattern))
                 if len(root_pattern):
                     pattern_node = list(self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
                     seed_type = self.__patterns[pattern_node].get('type', None)
-                    for s in seeds:
-                        type_triples.add((s, RDF.type, seed_type))
+                    [type_triples.add((s, RDF.type, seed_type)) for s in seeds]
 
+                # Get the children of the root node and follow them recursively
                 nxt = list(self.__plan_graph.objects(tree, AGORA.next))
                 if len(nxt):
-                    objs = {}
-                    for sp in self.__spaces:
-                        objs[sp] = set(seeds)
+                    # Prepare the list of seeds to start the exploration with, taking into account all search spaces
+                    # that were defined
+                    s_seeds = set(seeds)
+                    root_seeds = dict([(sp, s_seeds) for sp in self.__spaces])
 
-                    for (s, p, o) in __follow_tree(tree, tree_graph, objs.copy()):
+                    # Directly yield all found triples except for type ones, which will be evaluated retrospectively
+                    for (s, p, o) in __follow_node(tree, tree_graph, root_seeds):
                         if p == RDF.type:
-                            type_triples.add((s, p, o))
+                            type_triples.add((s, o))
                         else:
                             yield (s, p, o)
 
-                for (s, p, o) in type_triples:
-                    clear = False
-                    for stc in self.__subjects_to_clear:
-                        if s in self.__subjects_to_clear[stc]:
-                            clear = True
-                            break
-                    if not clear:
-                        if on_type_validation is not None:
-                            on_type_validation((s, p, o))
-                        yield (s, p, o)
+                # All type triples that are of subjects to ignore won't be returned (this has to be done this way
+                # because of generators nature)
+                all_ignores = set.intersection(*self.__subjects_to_ignore.values())
+                valid_type_triples = [(s, o) for (s, o) in type_triples if s not in all_ignores]
+                for (s, o) in valid_type_triples:
+                    if on_type_validation is not None:
+                        on_type_validation((s, RDF.type, o))
+                    yield (s, RDF.type, o)
 
-        return filter_triples(), self.__plan_graph.namespaces(), self.__plan_graph
+        return get_fragment_triples(), self.__plan_graph.namespaces(), self.__plan_graph
