@@ -21,6 +21,7 @@
   limitations under the License.
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
+from rdflib.plugins.parsers.notation3 import BadSyntax
 
 __author__ = 'Fernando Serena'
 
@@ -106,7 +107,10 @@ class FragmentCollector(object):
         query = urlencode({'gp': gp})
         response = requests.get('{}/plan?'.format(self.__planner) + query, headers={'Accept': 'text/turtle'})
         graph = Graph()
-        graph.parse(source=StringIO.StringIO(response.text), format='turtle')
+        try:
+            graph.parse(source=StringIO.StringIO(response.text), format='turtle')
+        except BadSyntax:
+            pass
         return graph
 
     def __extract_patterns_and_spaces(self):
@@ -272,7 +276,7 @@ class FragmentCollector(object):
                             seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=pattern_link))
                             for seed_object in seed_pattern_objects:
                                 if obj_filter is None or str(seed_object) == str(obj_filter):
-                                    yield (seed, pattern_link, seed_object)
+                                    yield (pattern, seed, pattern_link, seed_object)
                                 else:
                                     self.__subjects_to_ignore[pattern_space].add(seed)
 
@@ -288,7 +292,7 @@ class FragmentCollector(object):
                             # 'link' should be None!
                             seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
                             for seed_object in seed_pattern_objects:
-                                type_triple = (seed_object, RDF.type, obj_type)
+                                type_triple = (pattern, seed_object, RDF.type, obj_type)
                                 # In some cases, it is necessary to verify the type of the seed
                                 if check_type:
                                     __dereference_uri(tree_graph, seed_object)
@@ -365,19 +369,19 @@ class FragmentCollector(object):
                     root_seeds = dict([(sp, s_seeds) for sp in self.__spaces])
 
                     # Directly yield all found triples except for type ones, which will be evaluated retrospectively
-                    for (s, p, o) in __follow_node(tree, tree_graph, root_seeds):
+                    for (t, s, p, o) in __follow_node(tree, tree_graph, root_seeds):
                         if p == RDF.type:
-                            type_triples.add((s, o))
+                            type_triples.add((t, s, o))
                         else:
-                            yield (s, p, o)
+                            yield (t, s, p, o)
 
                 # All type triples that are of subjects to ignore won't be returned (this has to be done this way
                 # because of generators nature)
                 all_ignores = set.intersection(*self.__subjects_to_ignore.values())
-                valid_type_triples = [(s, o) for (s, o) in type_triples if s not in all_ignores]
-                for (s, o) in valid_type_triples:
+                valid_type_triples = [(t, s, o) for (t, s, o) in type_triples if s not in all_ignores]
+                for (t, s, o) in valid_type_triples:
                     if on_type_validation is not None:
-                        on_type_validation((s, RDF.type, o))
-                    yield (s, RDF.type, o)
+                        on_type_validation((t, s, RDF.type, o))
+                    yield (t, s, RDF.type, o)
 
         return get_fragment_triples(), self.__plan_graph.namespaces(), self.__plan_graph

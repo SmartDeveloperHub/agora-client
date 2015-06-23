@@ -25,7 +25,7 @@
 
 __author__ = 'Fernando Serena'
 
-from agora_client.agora import Agora
+from agora.client.agora import Agora
 from blessings import Terminal
 import sys
 from rdflib import Graph
@@ -72,9 +72,9 @@ def out_type(uri, objs, sp):
         format(sp, uri.n3(graph.namespace_manager), stringify_uri_list(objs)) + term.normal
 
 
-def out_type_validation((s, _, o)):
+def out_type_validation((_, s, p, o)):
     print term.green + 'Extracted {} as subject of type {}'.format(s.n3(graph.namespace_manager),
-                                                                     o.n3(graph.namespace_manager)) + term.white
+                                                                   o.n3(graph.namespace_manager)) + term.white
 
 
 def out_tree(node):
@@ -92,7 +92,7 @@ agora = Agora(PLANNER)
 #               ?r dc:created ?y.}"""
 
 # pattern = """{?s a sdh:Commit}"""
-pattern = """{?s a doap:Repository. ?s doap:name "maven-hpi-plugin". ?f a doap:Repository}"""
+pattern = """{?s a scm:Repository. ?s doap:name "maven-hpi-plugin".}"""
 
 if len(sys.argv) > 1:
     pattern = sys.argv[1]
@@ -127,12 +127,12 @@ for (prefix, u) in namespaces:
 raw_input(term.blink(term.bold_blue('(run)')))
 
 final_triples = 0
-for tp in fragment:
-    graph.add(tp)
+for _, s, p, o in fragment:
+    graph.add((s, p, o))
     final_triples += 1
-    print term.bold_green_on_bright_green('{} {} {} .'.format(tp[0].n3(graph.namespace_manager),
-                                                              tp[1].n3(graph.namespace_manager),
-                                                              tp[2].n3(graph.namespace_manager)))
+    print term.bold_green_on_bright_green('{} {} {} .'.format(s.n3(graph.namespace_manager),
+                                                              p.n3(graph.namespace_manager),
+                                                              o.n3(graph.namespace_manager)))
     if not unnattended:
         raw_input(term.bold_blue('(more)'))
 

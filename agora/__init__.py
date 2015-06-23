@@ -10,7 +10,7 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
-  You may obtain a copy of the License at
+  You may obtain a copy of the License at 
 
             http://www.apache.org/licenses/LICENSE-2.0
 
@@ -24,21 +24,9 @@
 
 __author__ = 'Fernando Serena'
 
-from setuptools import setup, find_packages
-
-setup(
-    name="Agora-Client",
-    version="0.1.3",
-    author="Fernando Serena",
-    author_email="fernando.serena@centeropenmiddleware.com",
-    description="An Agora client for Python that requests and executes search plans for graph patterns",
-    license="Apache 2",
-    keywords=["agora", "linked-data", "search-plan"],
-    url="https://github.com/smartdeveloperhub/agora-client",
-    download_url="https://github.com/smartdeveloperhub/agora-client/tarball/0.1.0",
-    packages=find_packages(exclude=['ez_setup', 'examples', 'tests']),
-    namespace_packages=['agora'],
-    install_requires=['requests', 'rdflib', 'blessings'],
-    classifiers=[],
-    scripts=['agora-cli']
-)
+import pkg_resources
+try:
+    pkg_resources.declare_namespace(__name__)
+except ImportError:
+    import pkgutil
+    __path__ = pkgutil.extend_path(__path__, __name__)
