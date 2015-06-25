@@ -21,21 +21,27 @@
   limitations under the License.
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
-from rdflib.plugins.parsers.notation3 import BadSyntax
-
 __author__ = 'Fernando Serena'
 
+from rdflib.plugins.parsers.notation3 import BadSyntax
+from concurrent.futures.thread import ThreadPoolExecutor
 import StringIO
 from urllib import urlencode
 import requests
 from rdflib import ConjunctiveGraph, Graph, RDF
 from rdflib.namespace import Namespace
-
+from concurrent.futures import wait, ALL_COMPLETED
 from blessings import Terminal
 
 term = Terminal()
 
 AGORA = Namespace('http://agora.org#')
+
+
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in xrange(0, len(l), n):
+        yield l[i:i + n]
 
 
 def __extend_uri(prefixes, short):
@@ -79,15 +85,11 @@ class Agora(object):
         return collector.get_fragment_generator(**kwargs)
 
 
-class FragmentCollector(object):
-    """ Class for interacting with the Agora planner and executing the plans for a certain graph pattern.
-    """
-
-    def __init__(self, planner_uri, gp):
-        self.__planner = planner_uri
+class PlanExecutor(object):
+    def __init__(self, plan):
+        self.__plan_graph = plan
         self.__cache_graph = ConjunctiveGraph()
         self.__uri_cache = []
-        self.__graph_pattern = gp
         self.__node_spaces = {}
         self.__node_patterns = {}
         self.__spaces = None
@@ -95,23 +97,7 @@ class FragmentCollector(object):
         self.__subjects_to_ignore = {}
 
         # Request a search plan on initialization and extract patterns and spaces
-        self.__plan_graph = self.__get_gp_plan(self.__graph_pattern)
         self.__extract_patterns_and_spaces()
-
-    def __get_gp_plan(self, gp):
-        """
-        Request the planner a search plan for a given gp and returns the plan as a graph.
-        :param gp:
-        :return:
-        """
-        query = urlencode({'gp': gp})
-        response = requests.get('{}/plan?'.format(self.__planner) + query, headers={'Accept': 'text/turtle'})
-        graph = Graph()
-        try:
-            graph.parse(source=StringIO.StringIO(response.text), format='turtle')
-        except BadSyntax:
-            pass
-        return graph
 
     def __extract_patterns_and_spaces(self):
         """
@@ -182,7 +168,7 @@ class FragmentCollector(object):
         gen, namespaces, plan = self.get_fragment_generator()
         graph = ConjunctiveGraph()
         [graph.bind(prefix, u) for (prefix, u) in namespaces]
-        [graph.add(tp) for tp in gen]
+        [graph.add((s, p, o)) for (_, s, p, o) in gen]
 
         return graph
 
@@ -210,9 +196,9 @@ class FragmentCollector(object):
             """
             loaded = False
             if uri not in self.__uri_cache:
+                self.__uri_cache.append(uri)
                 try:
                     self.__cache_graph.get_context(uri).load(uri, format='turtle')
-                    self.__uri_cache.append(uri)
                     loaded = True
                 except Exception:
                     pass
@@ -224,7 +210,27 @@ class FragmentCollector(object):
             if loaded and on_load is not None:
                 on_load(uri, triples)
 
-        def __follow_node(node, tree_graph, node_seeds=None):
+        def __process_seeds(f, seeds, *args):
+            futures = []
+            with ThreadPoolExecutor(min(len(seeds), 20)) as th_pool:
+                for seed in seeds:
+                    futures.append(th_pool.submit(f, seed, *args))
+                wait(futures, timeout=None, return_when=ALL_COMPLETED)
+                th_pool.shutdown()
+            return [f.result() for f in futures if f.done()]
+
+        def __process_link_seed(seed, tree_graph, link, next_seeds, sp):
+            __dereference_uri(tree_graph, seed)
+            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
+            for seed_object in seed_pattern_objects:
+                next_seeds[sp].add(seed_object)
+
+        def __process_pattern_link_seed(seed, tree_graph, pattern_link):
+            __dereference_uri(tree_graph, seed)
+            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=pattern_link))
+            return seed, seed_pattern_objects
+
+        def __follow_node(node, tree_graph, node_seeds):
             """
             Recursively search for relevant triples following the current node and all its successors
             :param node: Tree node to be followed
@@ -271,14 +277,16 @@ class FragmentCollector(object):
                         if on_plink is not None:
                             on_plink(pattern_link, filtered_seeds, pattern_space)
 
-                        for seed in filtered_seeds:
-                            __dereference_uri(tree_graph, seed)
-                            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=pattern_link))
-                            for seed_object in seed_pattern_objects:
-                                if obj_filter is None or str(seed_object) == str(obj_filter):
-                                    yield (pattern, seed, pattern_link, seed_object)
-                                else:
-                                    self.__subjects_to_ignore[pattern_space].add(seed)
+                        for chunk in chunks(filtered_seeds, min(20, len(filtered_seeds))):
+                            result = __process_seeds(__process_pattern_link_seed, chunk,
+                                                     tree_graph, pattern_link)
+
+                            for seed, seed_pattern_objects in result:
+                                for seed_object in seed_pattern_objects:
+                                    if obj_filter is None or str(seed_object) == str(obj_filter):
+                                        yield (pattern, seed, pattern_link, seed_object)
+                                    else:
+                                        self.__subjects_to_ignore[pattern_space].add(seed)
 
                     # If pattern is of type '?s a Concept'...
                     obj_type = self.__patterns[pattern].get('type', None)
@@ -308,11 +316,7 @@ class FragmentCollector(object):
                         filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[sp], node_seeds[sp])
                         if on_link is not None:
                             on_link(link, filtered_seeds, sp)
-                        for seed in filtered_seeds:
-                            __dereference_uri(tree_graph, seed)
-                            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
-                            for seed_object in seed_pattern_objects:
-                                next_seeds[sp].add(seed_object)
+                        __process_seeds(__process_link_seed, filtered_seeds, tree_graph, link, next_seeds, sp)
 
                 if filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
                     for yt in __follow_node(n, tree_graph, next_seeds):
@@ -385,3 +389,37 @@ class FragmentCollector(object):
                     yield (t, s, RDF.type, o)
 
         return get_fragment_triples(), self.__plan_graph.namespaces(), self.__plan_graph
+
+
+class FragmentCollector(object):
+    """ Class for interacting with the Agora planner and executing the plans for a certain graph pattern.
+    """
+
+    def __init__(self, planner_uri, gp):
+        self.__planner = planner_uri
+        self.__graph_pattern = gp
+
+        # Request a search plan on initialization and extract patterns and spaces
+        plan_graph = self.__get_gp_plan(self.__graph_pattern)
+        self.__plan_executor = PlanExecutor(plan_graph)
+
+    def __get_gp_plan(self, gp):
+        """
+        Request the planner a search plan for a given gp and returns the plan as a graph.
+        :param gp:
+        :return:
+        """
+        query = urlencode({'gp': gp})
+        response = requests.get('{}/plan?'.format(self.__planner) + query, headers={'Accept': 'text/turtle'})
+        graph = Graph()
+        try:
+            graph.parse(source=StringIO.StringIO(response.text), format='turtle')
+        except BadSyntax:
+            pass
+        return graph
+
+    def get_fragment(self):
+        return self.__plan_executor.get_fragment()
+
+    def get_fragment_generator(self, **kwargs):
+        return self.__plan_executor.get_fragment_generator(**kwargs)
