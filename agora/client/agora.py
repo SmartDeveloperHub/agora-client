@@ -24,16 +24,13 @@
 __author__ = 'Fernando Serena'
 
 from rdflib.plugins.parsers.notation3 import BadSyntax
-from concurrent.futures.thread import ThreadPoolExecutor
 import StringIO
 from urllib import urlencode
 import requests
 from rdflib import ConjunctiveGraph, Graph, RDF
 from rdflib.namespace import Namespace
 from concurrent.futures import wait, ALL_COMPLETED
-from blessings import Terminal
-
-term = Terminal()
+from concurrent.futures.thread import ThreadPoolExecutor
 
 AGORA = Namespace('http://agora.org#')
 
