@@ -195,21 +195,24 @@ class PlanExecutor(object):
             if uri not in self.__uri_cache:
                 self.__uri_cache.append(uri)
                 try:
-                    self.__cache_graph.get_context(uri).load(uri, format='turtle')
+                    response = requests.get(uri)
+                    self.__cache_graph.get_context(uri).parse(source=StringIO.StringIO(response.text), format='turtle')
+                    # self.__cache_graph.get_context(uri).parse()
                     loaded = True
-                except Exception:
+                except Exception, e:
+                    print e.message
                     pass
 
             # Copy the triples contained in the cache graph to the tree graph given as a parameter
-            triples = list(self.__cache_graph.get_context(uri).triples((None, None, None)))
-            [tg.get_context(uri).add(t) for t in triples]
+            tg.get_context(uri).__iadd__(self.__cache_graph.get_context(uri))
 
             if loaded and on_load is not None:
+                triples = list(self.__cache_graph.get_context(uri).triples((None, None, None)))
                 on_load(uri, triples)
 
         def __process_seeds(f, seeds, *args):
             futures = []
-            with ThreadPoolExecutor(min(len(seeds), 20)) as th_pool:
+            with ThreadPoolExecutor(min(len(seeds), 50)) as th_pool:
                 for seed in seeds:
                     futures.append(th_pool.submit(f, seed, *args))
                 wait(futures, timeout=None, return_when=ALL_COMPLETED)
@@ -218,13 +221,12 @@ class PlanExecutor(object):
 
         def __process_link_seed(seed, tree_graph, link, next_seeds, sp):
             __dereference_uri(tree_graph, seed)
-            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
-            for seed_object in seed_pattern_objects:
-                next_seeds[sp].add(seed_object)
+            seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
+            next_seeds[sp].update(seed_pattern_objects)
 
         def __process_pattern_link_seed(seed, tree_graph, pattern_link):
             __dereference_uri(tree_graph, seed)
-            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=pattern_link))
+            seed_pattern_objects = tree_graph.objects(subject=seed, predicate=pattern_link)
             return seed, seed_pattern_objects
 
         def __follow_node(node, tree_graph, node_seeds):
@@ -295,7 +297,7 @@ class PlanExecutor(object):
                         for seed in filtered_seeds:
                             __dereference_uri(tree_graph, seed)
                             # 'link' should be None!
-                            seed_pattern_objects = list(tree_graph.objects(subject=seed, predicate=link))
+                            seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
                             for seed_object in seed_pattern_objects:
                                 type_triple = (pattern, seed_object, RDF.type, obj_type)
                                 # In some cases, it is necessary to verify the type of the seed
