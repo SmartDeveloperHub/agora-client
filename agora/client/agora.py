@@ -283,7 +283,8 @@ class PlanExecutor(object):
 
                                 for seed, seed_pattern_objects in result:
                                     for seed_object in seed_pattern_objects:
-                                        if obj_filter is None or str(seed_object) == str(obj_filter):
+                                        if obj_filter is None or u''.join(seed_object).encode(
+                                                'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
                                             yield (pattern, seed, pattern_link, seed_object)
                                         else:
                                             self.__subjects_to_ignore[pattern_space].add(seed)
