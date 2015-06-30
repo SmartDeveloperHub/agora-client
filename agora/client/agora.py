@@ -37,8 +37,9 @@ AGORA = Namespace('http://agora.org#')
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
-    for i in xrange(0, len(l), n):
-        yield l[i:i + n]
+    if n:
+        for i in xrange(0, len(l), n):
+            yield l[i:i + n]
 
 
 def __extend_uri(prefixes, short):
@@ -212,7 +213,7 @@ class PlanExecutor(object):
 
         def __process_seeds(f, seeds, *args):
             futures = []
-            with ThreadPoolExecutor(min(len(seeds), 50)) as th_pool:
+            with ThreadPoolExecutor(min(len(seeds), 100)) as th_pool:
                 for seed in seeds:
                     futures.append(th_pool.submit(f, seed, *args))
                 wait(futures, timeout=None, return_when=ALL_COMPLETED)
@@ -262,64 +263,64 @@ class PlanExecutor(object):
                     link = None
 
                 next_seeds = dict([(sp, set([])) for sp in search_spaces])
+                if next_seeds.values():
+                    # If the current node is a pattern node, it must search for triples to yield
+                    for pattern in node_patterns:
+                        pattern_space = self.__patterns[pattern].get('space', None)
+                        pattern_link = self.__patterns[pattern].get('property', None)
+                        filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[pattern_space],
+                                                node_seeds[pattern_space])
 
-                # If the current node is a pattern node, it must search for triples to yield
-                for pattern in node_patterns:
-                    pattern_space = self.__patterns[pattern].get('space', None)
-                    pattern_link = self.__patterns[pattern].get('property', None)
-                    filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[pattern_space],
-                                            node_seeds[pattern_space])
+                        # If pattern is of type '?s prop O'...
+                        if pattern_link is not None:
+                            obj_filter = self.__patterns[pattern].get('filter', None)
+                            if on_plink is not None:
+                                on_plink(pattern_link, filtered_seeds, pattern_space)
 
-                    # If pattern is of type '?s prop O'...
-                    if pattern_link is not None:
-                        obj_filter = self.__patterns[pattern].get('filter', None)
-                        if on_plink is not None:
-                            on_plink(pattern_link, filtered_seeds, pattern_space)
+                            for chunk in chunks(filtered_seeds, min(20, len(filtered_seeds))):
+                                result = __process_seeds(__process_pattern_link_seed, chunk,
+                                                         tree_graph, pattern_link)
 
-                        for chunk in chunks(filtered_seeds, min(20, len(filtered_seeds))):
-                            result = __process_seeds(__process_pattern_link_seed, chunk,
-                                                     tree_graph, pattern_link)
+                                for seed, seed_pattern_objects in result:
+                                    for seed_object in seed_pattern_objects:
+                                        if obj_filter is None or str(seed_object) == str(obj_filter):
+                                            yield (pattern, seed, pattern_link, seed_object)
+                                        else:
+                                            self.__subjects_to_ignore[pattern_space].add(seed)
 
-                            for seed, seed_pattern_objects in result:
+                        # If pattern is of type '?s a Concept'...
+                        obj_type = self.__patterns[pattern].get('type', None)
+                        if obj_type is not None:
+                            check_type = self.__patterns[pattern].get('check', False)
+                            if on_type is not None:
+                                on_type(obj_type, filtered_seeds, pattern_space)
+
+                            for seed in filtered_seeds:
+                                __dereference_uri(tree_graph, seed)
+                                # 'link' should be None!
+                                seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
                                 for seed_object in seed_pattern_objects:
-                                    if obj_filter is None or str(seed_object) == str(obj_filter):
-                                        yield (pattern, seed, pattern_link, seed_object)
+                                    type_triple = (pattern, seed_object, RDF.type, obj_type)
+                                    # In some cases, it is necessary to verify the type of the seed
+                                    if check_type:
+                                        __dereference_uri(tree_graph, seed_object)
+                                        types = list(tree_graph.objects(subject=seed_object, predicate=RDF.type))
+                                        if obj_type in types:
+                                            yield type_triple
                                     else:
-                                        self.__subjects_to_ignore[pattern_space].add(seed)
-
-                    # If pattern is of type '?s a Concept'...
-                    obj_type = self.__patterns[pattern].get('type', None)
-                    if obj_type is not None:
-                        check_type = self.__patterns[pattern].get('check', False)
-                        if on_type is not None:
-                            on_type(obj_type, filtered_seeds, pattern_space)
-
-                        for seed in filtered_seeds:
-                            __dereference_uri(tree_graph, seed)
-                            # 'link' should be None!
-                            seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
-                            for seed_object in seed_pattern_objects:
-                                type_triple = (pattern, seed_object, RDF.type, obj_type)
-                                # In some cases, it is necessary to verify the type of the seed
-                                if check_type:
-                                    __dereference_uri(tree_graph, seed_object)
-                                    types = list(tree_graph.objects(subject=seed_object, predicate=RDF.type))
-                                    if obj_type in types:
                                         yield type_triple
-                                else:
-                                    yield type_triple
 
-                # If the current node is not a leaf... go on finding seeds for the successors
-                if link is not None:
-                    for sp in search_spaces:
-                        filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[sp], node_seeds[sp])
-                        if on_link is not None:
-                            on_link(link, filtered_seeds, sp)
-                        __process_seeds(__process_link_seed, filtered_seeds, tree_graph, link, next_seeds, sp)
+                    # If the current node is not a leaf... go on finding seeds for the successors
+                    if link is not None:
+                        for sp in search_spaces:
+                            filtered_seeds = filter(lambda x: x not in self.__subjects_to_ignore[sp], node_seeds[sp])
+                            if on_link is not None:
+                                on_link(link, filtered_seeds, sp)
+                            __process_seeds(__process_link_seed, filtered_seeds, tree_graph, link, next_seeds, sp)
 
-                if filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
-                    for yt in __follow_node(n, tree_graph, next_seeds):
-                        yield yt
+                    if filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
+                        for yt in __follow_node(n, tree_graph, next_seeds):
+                            yield yt
 
         def get_fragment_triples():
             """
