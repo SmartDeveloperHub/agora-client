@@ -63,14 +63,14 @@ class Agora(object):
     def __init__(self, host):
         self.__host = host
 
-    def get_fragment(self, gp):
+    def get_fragment(self, gp, **kwargs):
         """
         Return a complete fragment for a given gp.
         :param gp: A graph pattern
         :return:
         """
         collector = FragmentCollector(self.__host, gp)
-        return collector.get_fragment()
+        return collector.get_fragment(**kwargs)
 
     def get_fragment_generator(self, gp, **kwargs):
         """
@@ -157,13 +157,13 @@ class PlanExecutor(object):
                 self.__node_patterns[n].add(tp)
             __decorate_nodes(nodes, space)
 
-    def get_fragment(self):
+    def get_fragment(self, **kwargs):
         """
         Return a complete fragment.
         :param gp:
         :return:
         """
-        gen, namespaces, plan = self.get_fragment_generator()
+        gen, namespaces, plan = self.get_fragment_generator(**kwargs)
         graph = ConjunctiveGraph()
         [graph.bind(prefix, u) for (prefix, u) in namespaces]
         [graph.add((s, p, o)) for (_, s, p, o) in gen]
@@ -171,7 +171,7 @@ class PlanExecutor(object):
         return graph
 
     def get_fragment_generator(self, on_load=None, on_seeds=None, on_plink=None, on_link=None, on_type=None,
-                               on_type_validation=None, on_tree=None):
+                               on_type_validation=None, on_tree=None, workers=10, stop_event=None):
         """
         Create a fragment generator that executes the search plan.
         :param on_load: Function to be called just after a new URI is dereferenced
@@ -192,6 +192,7 @@ class PlanExecutor(object):
             :param uri: A resource uri to be dereferenced
             :return:
             """
+
             loaded = False
             if uri not in self.__uri_cache:
                 self.__uri_cache.append(uri)
@@ -200,8 +201,9 @@ class PlanExecutor(object):
                     self.__cache_graph.get_context(uri).parse(source=StringIO.StringIO(response.text), format='turtle')
                     # self.__cache_graph.get_context(uri).parse()
                     loaded = True
-                except Exception, e:
-                    print e.message
+                except (KeyboardInterrupt, SystemError, SystemExit):
+                    raise
+                except Exception:
                     pass
 
             # Copy the triples contained in the cache graph to the tree graph given as a parameter
@@ -213,12 +215,18 @@ class PlanExecutor(object):
 
         def __process_seeds(f, seeds, *args):
             futures = []
-            with ThreadPoolExecutor(min(len(seeds), 100)) as th_pool:
-                for seed in seeds:
-                    futures.append(th_pool.submit(f, seed, *args))
-                wait(futures, timeout=None, return_when=ALL_COMPLETED)
-                th_pool.shutdown()
-            return [f.result() for f in futures if f.done()]
+            try:
+                with ThreadPoolExecutor(min(len(seeds), workers)) as th_pool:
+                    for seed in seeds:
+                        if stop_event.isSet():
+                            break
+                        futures.append(th_pool.submit(f, seed, *args))
+                    wait(futures, timeout=None, return_when=ALL_COMPLETED)
+                    th_pool.shutdown()
+                return [f.result() for f in futures if f.done()]
+            except Exception, e:
+                print e.message
+                raise
 
         def __process_link_seed(seed, tree_graph, link, next_seeds, sp):
             __dereference_uri(tree_graph, seed)
@@ -280,7 +288,6 @@ class PlanExecutor(object):
                             for chunk in chunks(filtered_seeds, min(20, len(filtered_seeds))):
                                 result = __process_seeds(__process_pattern_link_seed, chunk,
                                                          tree_graph, pattern_link)
-
                                 for seed, seed_pattern_objects in result:
                                     for seed_object in seed_pattern_objects:
                                         if obj_filter is None or u''.join(seed_object).encode(
@@ -319,7 +326,7 @@ class PlanExecutor(object):
                                 on_link(link, filtered_seeds, sp)
                             __process_seeds(__process_link_seed, filtered_seeds, tree_graph, link, next_seeds, sp)
 
-                    if filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
+                    if not stop_event.isSet() and filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
                         for yt in __follow_node(n, tree_graph, next_seeds):
                             yield yt
 
@@ -419,8 +426,8 @@ class FragmentCollector(object):
             pass
         return graph
 
-    def get_fragment(self):
-        return self.__plan_executor.get_fragment()
+    def get_fragment(self, **kwargs):
+        return self.__plan_executor.get_fragment(**kwargs)
 
     def get_fragment_generator(self, **kwargs):
         return self.__plan_executor.get_fragment_generator(**kwargs)
