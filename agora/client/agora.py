@@ -218,8 +218,7 @@ class PlanExecutor(object):
             try:
                 with ThreadPoolExecutor(min(len(seeds), workers)) as th_pool:
                     for seed in seeds:
-                        if stop_event.isSet():
-                            break
+                        __check_stop()
                         futures.append(th_pool.submit(f, seed, *args))
                     wait(futures, timeout=None, return_when=ALL_COMPLETED)
                     th_pool.shutdown()
@@ -237,6 +236,10 @@ class PlanExecutor(object):
             __dereference_uri(tree_graph, seed)
             seed_pattern_objects = tree_graph.objects(subject=seed, predicate=pattern_link)
             return seed, seed_pattern_objects
+
+        def __check_stop():
+            if stop_event is not None and stop_event.isSet():
+                raise Exception('Abort plan execution')
 
         def __follow_node(node, tree_graph, node_seeds):
             """
@@ -326,7 +329,9 @@ class PlanExecutor(object):
                                 on_link(link, filtered_seeds, sp)
                             __process_seeds(__process_link_seed, filtered_seeds, tree_graph, link, next_seeds, sp)
 
-                    if not stop_event.isSet() and filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
+                    __check_stop()
+
+                    if filter(lambda x: len(next_seeds[x]), next_seeds.keys()):
                         for yt in __follow_node(n, tree_graph, next_seeds):
                             yield yt
 
