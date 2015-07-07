@@ -197,7 +197,7 @@ class PlanExecutor(object):
             if uri not in self.__uri_cache:
                 self.__uri_cache.append(uri)
                 try:
-                    response = requests.get(uri)
+                    response = requests.get(uri, headers={'Accept': 'text/turtle'})
                     self.__cache_graph.get_context(uri).parse(source=StringIO.StringIO(response.text), format='turtle')
                     # self.__cache_graph.get_context(uri).parse()
                     loaded = True
@@ -375,7 +375,7 @@ class PlanExecutor(object):
                 if len(root_pattern):
                     pattern_node = list(self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
                     seed_type = self.__patterns[pattern_node].get('type', None)
-                    [type_triples.add((s, seed_type)) for s in seeds]
+                    [type_triples.add((pattern_node, s, seed_type)) for s in seeds]
 
                 # Get the children of the root node and follow them recursively
                 nxt = list(self.__plan_graph.objects(tree, AGORA.next))
