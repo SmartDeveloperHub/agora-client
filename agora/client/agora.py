@@ -213,7 +213,7 @@ class PlanExecutor(object):
 
             loaded = False
             self.__queue_lock.acquire()
-            if uri not in self.__resource_queue[tg]:
+            if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
                 self.__resource_queue[tg].append(uri)
                 if len(self.__resource_queue[tg]) > workers * 2:
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
