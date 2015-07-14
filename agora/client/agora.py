@@ -212,7 +212,7 @@ class PlanExecutor(object):
             self.__queue_lock.acquire()
             if uri not in self.__resource_queue[tg]:
                 self.__resource_queue[tg].append(uri)
-                if len(self.__resource_queue[tg]) > 100:
+                if len(self.__resource_queue[tg]) > queue_size:
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__queue_lock.release()
                 if not stop_event.isSet():
@@ -348,7 +348,7 @@ class PlanExecutor(object):
                                     on_link(link, [seed], seed_space)
                                 __process_link_seed(seed, tree_graph, link, next_seeds)
 
-                            chs = chunks(list(next_seeds), min(len(next_seeds), max(1, workers / 2)))
+                            chs = chunks(list(next_seeds), min(len(next_seeds), max(1, workers)))
                             for chunk in chs:
                                 threads = []
                                 for s in chunk:
