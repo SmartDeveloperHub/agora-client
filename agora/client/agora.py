@@ -358,17 +358,22 @@ class PlanExecutor(object):
                                 on_link(link, [seed], seed_space)
                             __process_link_seed(seed, tree_graph, link, next_seeds)
 
-                        chs = chunks(list(next_seeds), min(len(next_seeds), max(1, workers)))
-                        for chunk in chs:
-                            threads = []
-                            for s in chunk:
-                                __check_stop()
-                                with thread_semaphore:
-                                    th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
-                                    th.daemon = True
-                                    th.start()
-                                    threads.append(th)
-                            [th.join() for th in threads]
+                        chs = list(chunks(list(next_seeds), min(len(next_seeds), max(1, workers))))
+                        next_seeds.clear()
+                        try:
+                            while True:
+                                chunk = chs.pop()
+                                threads = []
+                                for s in chunk:
+                                    __check_stop()
+                                    with thread_semaphore:
+                                        th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
+                                        th.daemon = True
+                                        th.start()
+                                        threads.append(th)
+                                [th.join() for th in threads]
+                        except IndexError:
+                            pass
             except Queue.Full, e:
                 print e.message
                 stop_event.set()
