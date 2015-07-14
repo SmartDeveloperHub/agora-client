@@ -198,6 +198,7 @@ class PlanExecutor(object):
 
         queue = Queue.Queue(maxsize=queue_size)
         thread_semaphore = BoundedSemaphore(value=workers)
+        workers_queue = Queue.Queue(maxsize=workers * 10)
 
         if stop_event is None:
             stop_event = Event()
@@ -286,6 +287,8 @@ class PlanExecutor(object):
                 p_node = list(self.__plan_graph.objects(subject=x, predicate=AGORA.byPattern))
                 return len(p_node) and 'filter' in self.__patterns[p_node.pop()]
 
+            workers_queue.put('a')
+
             # with exec_sem:
             try:
                 # Get the sorted list of current node's successors
@@ -358,25 +361,26 @@ class PlanExecutor(object):
                                 on_link(link, [seed], seed_space)
                             __process_link_seed(seed, tree_graph, link, next_seeds)
 
-                        chs = list(chunks(list(next_seeds), min(len(next_seeds), max(1, workers))))
+                        chs = list(chunks(list(next_seeds), min(len(next_seeds), max(1, workers / 2))))
                         next_seeds.clear()
                         try:
                             while True:
+                                __check_stop()
                                 chunk = chs.pop()
                                 threads = []
                                 for s in chunk:
-                                    __check_stop()
-                                    with thread_semaphore:
-                                        th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
-                                        th.daemon = True
-                                        th.start()
-                                        threads.append(th)
+                                    th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
+                                    th.daemon = True
+                                    th.start()
+                                    threads.append(th)
                                 [th.join() for th in threads]
-                        except IndexError:
+                        except (IndexError, KeyError):
                             pass
             except Queue.Full, e:
                 print e.message
                 stop_event.set()
+
+            workers_queue.get()
 
         def get_fragment_triples():
             """
