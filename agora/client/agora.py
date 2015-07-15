@@ -30,9 +30,8 @@ from urllib import urlencode
 import requests
 from rdflib import ConjunctiveGraph, Graph, RDF
 from rdflib.namespace import Namespace
-from threading import Lock, Thread, Event, BoundedSemaphore
+from threading import Lock, Thread, Event
 import Queue
-import base64
 import gc
 import multiprocessing
 
@@ -98,8 +97,7 @@ class PlanExecutor(object):
         self.__patterns = {}
         self.__subjects_to_ignore = {}
         self.__resource_queue = {}
-        self.__dropable_resources = {}
-        self.__queue_lock = Lock()
+        self.__resource_lock = Lock()
         self.__completed = False
 
         # Request a search plan on initialization and extract patterns and spaces
@@ -196,9 +194,8 @@ class PlanExecutor(object):
         if workers is None:
             workers = multiprocessing.cpu_count()
 
-        queue = Queue.Queue(maxsize=queue_size)
-        thread_semaphore = BoundedSemaphore(value=workers)
-        workers_queue = Queue.Queue(maxsize=workers * 10)
+        fragment_queue = Queue.Queue(maxsize=queue_size)
+        workers_queue = Queue.Queue(maxsize=workers)
 
         if stop_event is None:
             stop_event = Event()
@@ -213,26 +210,25 @@ class PlanExecutor(object):
             """
 
             loaded = False
-            self.__queue_lock.acquire()
+            self.__resource_lock.acquire()
             if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
                 self.__resource_queue[tg].append(uri)
-                if len(self.__resource_queue[tg]) > workers * 2:
+                if len(self.__resource_queue[tg]) > workers * 3:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
-                self.__queue_lock.release()
+                self.__resource_lock.release()
                 if not stop_event.isSet():
                     try:
                         response = requests.get(uri, headers={'Accept': 'text/turtle'})
-                        self.__queue_lock.acquire()
+                        self.__resource_lock.acquire()
                         tg.get_context(uri).parse(source=StringIO.StringIO(response.text), format='turtle')
+                        self.__resource_lock.release()
                         loaded = True
                     except (KeyboardInterrupt, SystemError, SystemExit):
                         raise
                     except Exception:
                         pass
-                    finally:
-                        self.__queue_lock.release()
             else:
-                self.__queue_lock.release()
+                self.__resource_lock.release()
 
             if loaded and on_load is not None:
                 triples = list(tg.get_context(uri).triples((None, None, None)))
@@ -252,7 +248,7 @@ class PlanExecutor(object):
 
         def __check_stop():
             if stop_event.isSet():
-                with self.__queue_lock:
+                with self.__resource_lock:
                     self.__fragment.clear()
                     for tg in self.__resource_queue.keys():
                         try:
@@ -287,9 +283,6 @@ class PlanExecutor(object):
                 p_node = list(self.__plan_graph.objects(subject=x, predicate=AGORA.byPattern))
                 return len(p_node) and 'filter' in self.__patterns[p_node.pop()]
 
-            workers_queue.put('a')
-
-            # with exec_sem:
             try:
                 # Get the sorted list of current node's successors
                 nxt = sorted(list(self.__plan_graph.objects(node, AGORA.next)),
@@ -328,7 +321,7 @@ class PlanExecutor(object):
                                         if obj_filter is None or u''.join(seed_object).encode(
                                                 'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
                                             self.__fragment.add((seed, pattern_link))
-                                            queue.put(quad, timeout=queue_wait)
+                                            fragment_queue.put(quad, timeout=queue_wait)
                                         else:
                                             self.__subjects_to_ignore[pattern_space].add(seed)
 
@@ -350,10 +343,10 @@ class PlanExecutor(object):
                                                 tree_graph.objects(subject=seed_object, predicate=RDF.type))
                                             if obj_type in types:
                                                 self.__fragment.add((seed_object, obj_type))
-                                                queue.put(type_triple, timeout=queue_wait)
+                                                fragment_queue.put(type_triple, timeout=queue_wait)
                                         else:
                                             self.__fragment.add((seed_object, obj_type))
-                                            queue.put(type_triple, timeout=queue_wait)
+                                            fragment_queue.put(type_triple, timeout=queue_wait)
 
                         # If the current node is not a leaf... go on finding seeds for the successors
                         if link is not None and seed not in self.__subjects_to_ignore[seed_space]:
@@ -369,18 +362,24 @@ class PlanExecutor(object):
                                 chunk = chs.pop()
                                 threads = []
                                 for s in chunk:
-                                    th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
-                                    th.daemon = True
-                                    th.start()
-                                    threads.append(th)
+                                    try:
+                                        workers_queue.put_nowait(s)
+                                        th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
+                                        th.daemon = True
+                                        th.start()
+                                        threads.append(th)
+                                    except Queue.Full:
+                                        # If all threads are busy...I'll do it myself
+                                        __follow_node(n, tree_graph, seed_space, s)
+                                    except Queue.Empty:
+                                        pass
                                 [th.join() for th in threads]
+                                [(workers_queue.get_nowait(), workers_queue.task_done()) for _ in threads]
                         except (IndexError, KeyError):
                             pass
             except Queue.Full, e:
                 print e.message
                 stop_event.set()
-
-            workers_queue.get()
 
         def get_fragment_triples():
             """
@@ -397,7 +396,6 @@ class PlanExecutor(object):
                     # to be evaluated retrospectively
                     tree_graph = ConjunctiveGraph()
                     self.__resource_queue[tree_graph] = []
-                    self.__dropable_resources[tree_graph] = set([])
 
                     # Get all seeds of the current tree
                     seeds = list(self.__plan_graph.objects(tree, AGORA.hasSeed))
@@ -444,10 +442,10 @@ class PlanExecutor(object):
 
             type_triples = set([])
 
-            while not self.__completed or queue.not_empty:
+            while not self.__completed or fragment_queue.not_empty:
                 try:
-                    (t, s, p, o) = queue.get(timeout=1)
-                    queue.task_done()
+                    (t, s, p, o) = fragment_queue.get(timeout=1)
+                    fragment_queue.task_done()
                     if p == RDF.type:
                         type_triples.add((t, s, o))
                     else:
