@@ -30,7 +30,7 @@ from urllib import urlencode
 import requests
 from rdflib import ConjunctiveGraph, Graph, RDF
 from rdflib.namespace import Namespace
-from threading import Lock, Thread, Event
+from threading import RLock, Thread, Event
 import Queue
 import gc
 import multiprocessing
@@ -97,7 +97,7 @@ class PlanExecutor(object):
         self.__patterns = {}
         self.__subjects_to_ignore = {}
         self.__resource_queue = {}
-        self.__resource_lock = Lock()
+        self.__resource_lock = RLock()
         self.__completed = False
 
         # Request a search plan on initialization and extract patterns and spaces
@@ -216,17 +216,19 @@ class PlanExecutor(object):
                 if len(self.__resource_queue[tg]) > workers * 3:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
-                if not stop_event.isSet():
-                    try:
-                        response = requests.get(uri, headers={'Accept': 'text/turtle'})
+                try:
+                    response = requests.get(uri, headers={'Accept': 'text/turtle'})
+                    if response.status_code == 200:
                         self.__resource_lock.acquire()
                         tg.get_context(uri).parse(source=StringIO.StringIO(response.text), format='turtle')
                         self.__resource_lock.release()
-                        loaded = True
-                    except (KeyboardInterrupt, SystemError, SystemExit):
-                        raise
-                    except Exception:
-                        pass
+                    loaded = True
+                except (KeyboardInterrupt, SystemError, SystemExit):
+                    raise
+                except BadSyntax:
+                    self.__resource_lock.release()
+                except Exception:
+                    pass
             else:
                 self.__resource_lock.release()
 
