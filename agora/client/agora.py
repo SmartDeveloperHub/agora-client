@@ -422,7 +422,7 @@ class PlanExecutor(object):
                             for seed in s_seeds:
                                 __follow_node(tree, tree_graph, sp, seed)
 
-                    self.__completed = True
+                self.__completed = True
 
             def get_tree_length(x):
                 """
