@@ -38,6 +38,11 @@ import multiprocessing
 AGORA = Namespace('http://agora.org#')
 
 
+class StopException(Exception):
+    def __init__(self):
+        super(StopException, self).__init__()
+
+
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
     if n:
@@ -255,6 +260,7 @@ class PlanExecutor(object):
                     for tg in self.__resource_queue.keys():
                         try:
                             tg.remove((None, None, None))
+                            tg.store.close()
                         except KeyError:
                             pass
                         tg.close()
@@ -266,8 +272,8 @@ class PlanExecutor(object):
                     self.__patterns = None
                     self.__subjects_to_ignore.clear()
                     self.__resource_queue.clear()
-                    gc.collect()
-                raise Exception('Aborted plan execution')
+                gc.collect()
+                raise StopException()
 
         def __follow_node(node, tree_graph, seed_space, seed):
             """
@@ -379,9 +385,10 @@ class PlanExecutor(object):
                                 [(workers_queue.get_nowait(), workers_queue.task_done()) for _ in threads]
                         except (IndexError, KeyError):
                             pass
-            except Queue.Full, e:
-                print e.message
+            except Queue.Full:
                 stop_event.set()
+            except StopException:
+                return
 
         def get_fragment_triples():
             """
