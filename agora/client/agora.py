@@ -466,7 +466,9 @@ class PlanExecutor(object):
 
             # All type triples that are of subjects to ignore won't be returned (this has to be done this way
             # because of generators nature)
-            all_ignores = set.intersection(*self.__subjects_to_ignore.values())
+            all_ignores = {}
+            if self.__subjects_to_ignore.values():
+                all_ignores = set.intersection(*self.__subjects_to_ignore.values())
             valid_type_triples = [(t, s, o) for (t, s, o) in type_triples if s not in all_ignores]
             for (t, s, o) in valid_type_triples:
                 if on_type_validation is not None:
