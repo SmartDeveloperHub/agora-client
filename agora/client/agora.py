@@ -35,6 +35,7 @@ import Queue
 import gc
 import multiprocessing
 
+
 AGORA = Namespace('http://agora.org#')
 
 
@@ -213,7 +214,6 @@ class PlanExecutor(object):
             :param uri: A resource uri to be dereferenced
             :return:
             """
-
             loaded = False
             self.__resource_lock.acquire()
             if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
@@ -222,17 +222,18 @@ class PlanExecutor(object):
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
                 try:
-                    response = requests.get(uri, headers={'Accept': 'text/turtle'})
+                    response = requests.get(uri, headers={'Accept': 'application/rdf+xml'})
                     if response.status_code == 200:
                         self.__resource_lock.acquire()
-                        tg.get_context(uri).parse(source=StringIO.StringIO(response.text), format='turtle')
+                        tg.get_context(uri).parse(source=StringIO.StringIO(response.content), format='xml')
                         self.__resource_lock.release()
                     loaded = True
                 except (KeyboardInterrupt, SystemError, SystemExit):
                     raise
                 except BadSyntax:
                     self.__resource_lock.release()
-                except Exception:
+                except Exception as e:
+                    print e.message
                     pass
             else:
                 self.__resource_lock.release()
