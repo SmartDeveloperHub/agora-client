@@ -37,6 +37,7 @@ import multiprocessing
 
 
 AGORA = Namespace('http://agora.org#')
+_accept_mimes = {'turtle': 'text/turtle', 'xml': 'application/rdf+xml'}
 
 
 class StopException(Exception):
@@ -105,6 +106,7 @@ class PlanExecutor(object):
         self.__resource_queue = {}
         self.__resource_lock = RLock()
         self.__completed = False
+        self.__preferred_format = None
 
         # Request a search plan on initialization and extract patterns and spaces
         self.__extract_patterns_and_spaces()
@@ -207,6 +209,24 @@ class PlanExecutor(object):
             stop_event = Event()
 
         def __dereference_uri(tg, uri):
+            def treat_resource_content(parse_format):
+                try:
+                    response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]})
+                    if response.status_code == 200:
+                        self.__resource_lock.acquire()
+                        tg.get_context(uri).parse(source=StringIO.StringIO(response.content), format=parse_format)
+                        self.__resource_lock.release()
+                    return True
+                except (KeyboardInterrupt, SystemError, SystemExit):
+                    raise
+                except BadSyntax:
+                    self.__resource_lock.release()
+                    return False
+                except Exception as e:
+                    self.__resource_lock.release()
+                    print e.message
+                    return False
+
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
             more than once in the context of a search plan execution
@@ -221,20 +241,14 @@ class PlanExecutor(object):
                 if len(self.__resource_queue[tg]) > workers * 3:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
-                try:
-                    response = requests.get(uri, headers={'Accept': 'application/rdf+xml'})
-                    if response.status_code == 200:
-                        self.__resource_lock.acquire()
-                        tg.get_context(uri).parse(source=StringIO.StringIO(response.content), format='xml')
-                        self.__resource_lock.release()
-                    loaded = True
-                except (KeyboardInterrupt, SystemError, SystemExit):
-                    raise
-                except BadSyntax:
-                    self.__resource_lock.release()
-                except Exception as e:
-                    print e.message
-                    pass
+                if self.__preferred_format is None:
+                    for fmt in _accept_mimes.keys():
+                        loaded = treat_resource_content(fmt)
+                        if loaded:
+                            self.__preferred_format = fmt
+                            break
+                else:
+                    loaded = treat_resource_content(self.__preferred_format)
             else:
                 self.__resource_lock.release()
 
