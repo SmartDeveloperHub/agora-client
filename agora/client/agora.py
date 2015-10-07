@@ -34,7 +34,10 @@ from threading import RLock, Thread, Event
 import Queue
 import gc
 import multiprocessing
+import logging
+from datetime import datetime as dt
 
+log = logging.getLogger('agora.client')
 
 AGORA = Namespace('http://agora.org#')
 _accept_mimes = {'turtle': 'text/turtle', 'xml': 'application/rdf+xml'}
@@ -106,7 +109,8 @@ class PlanExecutor(object):
         self.__resource_queue = {}
         self.__resource_lock = RLock()
         self.__completed = False
-        self.__preferred_format = None
+        self.__last_success_format = None
+        self.__last_iteration_ts = dt.now()
 
         # Request a search plan on initialization and extract patterns and spaces
         self.__extract_patterns_and_spaces()
@@ -210,22 +214,40 @@ class PlanExecutor(object):
 
         def __dereference_uri(tg, uri):
             def treat_resource_content(parse_format):
+                lock_acquired = False
                 try:
                     response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]})
+                except Exception:
+                    log.debug('[Dereference][ERROR][GET] {}'.format(uri))
+                    return False
+
+                try:
                     if response.status_code == 200:
+                        log.debug('Parsing RDF as {} of {}...'.format(parse_format, uri))
+                        g = Graph()
+                        g.parse(source=StringIO.StringIO(response.content), format=parse_format)
+                        log.debug('RDF parse of {} done!'.format(uri))
+                        log.debug('Trying to acquire lock for {}'.format(uri))
                         self.__resource_lock.acquire()
-                        tg.get_context(uri).parse(source=StringIO.StringIO(response.content), format=parse_format)
+                        lock_acquired = True
+                        tg.get_context(uri).__iadd__(g)
+                        g.remove((None, None, None))
+                        log.debug('Trying to release lock for {}'.format(uri))
                         self.__resource_lock.release()
+                        log.debug('[Dereference][OK] {}'.format(uri))
                     return True
+                except SyntaxError:
+                    log.debug('[Dereference][PARSE] {}'.format(uri))
+                    return False
+                except ValueError as e:
+                    log.error(e.message)
+                    log.debug('[Dereference][ERROR] {}'.format(uri))
+                    return False
                 except (KeyboardInterrupt, SystemError, SystemExit):
+                    if lock_acquired:
+                        self.__resource_lock.release()
                     raise
-                except BadSyntax:
-                    self.__resource_lock.release()
-                    return False
-                except Exception as e:
-                    self.__resource_lock.release()
-                    print e.message
-                    return False
+
 
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
@@ -241,16 +263,16 @@ class PlanExecutor(object):
                 if len(self.__resource_queue[tg]) > workers * 3:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
-                if self.__preferred_format is None:
-                    for fmt in _accept_mimes.keys():
-                        loaded = treat_resource_content(fmt)
-                        if loaded:
-                            self.__preferred_format = fmt
-                            break
-                else:
-                    loaded = treat_resource_content(self.__preferred_format)
+                for fmt in sorted(_accept_mimes.keys(), key=lambda x: x != self.__last_success_format):
+                    loaded = treat_resource_content(fmt)
+                    if loaded:
+                        self.__last_success_format = fmt
+                        break
             else:
-                self.__resource_lock.release()
+                try:
+                    self.__resource_lock.release()
+                except RuntimeError:  # Raises when trying to release the lock but was not acquired
+                    pass
 
             if loaded and on_load is not None:
                 triples = list(tg.get_context(uri).triples((None, None, None)))
@@ -289,6 +311,12 @@ class PlanExecutor(object):
                     self.__resource_queue.clear()
                 gc.collect()
                 raise StopException()
+
+        def __put_triple_in_queue(quad):
+            if (dt.now() - self.__last_iteration_ts).total_seconds() > 1:
+                log.info('Aborted fragment collection!')
+                stop_event.set()
+            fragment_queue.put(quad, timeout=queue_wait)
 
         def __follow_node(node, tree_graph, seed_space, seed):
             """
@@ -344,7 +372,7 @@ class PlanExecutor(object):
                                         if obj_filter is None or u''.join(seed_object).encode(
                                                 'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
                                             self.__fragment.add((seed, pattern_link))
-                                            fragment_queue.put(quad, timeout=queue_wait)
+                                            __put_triple_in_queue(quad)
                                         else:
                                             self.__subjects_to_ignore[pattern_space].add(seed)
 
@@ -366,10 +394,10 @@ class PlanExecutor(object):
                                                 tree_graph.objects(subject=seed_object, predicate=RDF.type))
                                             if obj_type in types:
                                                 self.__fragment.add((seed_object, obj_type))
-                                                fragment_queue.put(type_triple, timeout=queue_wait)
+                                                __put_triple_in_queue(type_triple)
                                         else:
                                             self.__fragment.add((seed_object, obj_type))
-                                            fragment_queue.put(type_triple, timeout=queue_wait)
+                                            __put_triple_in_queue(type_triple)
 
                         # If the current node is not a leaf... go on finding seeds for the successors
                         if link is not None and seed not in self.__subjects_to_ignore[seed_space]:
@@ -402,7 +430,7 @@ class PlanExecutor(object):
                             pass
             except Queue.Full:
                 stop_event.set()
-            except StopException:
+            except Exception:
                 return
 
         def get_fragment_triples():
@@ -477,6 +505,7 @@ class PlanExecutor(object):
                 except Queue.Empty:
                     if self.__completed:
                         break
+                self.__last_iteration_ts = dt.now()
             thread.join()
 
             # All type triples that are of subjects to ignore won't be returned (this has to be done this way
