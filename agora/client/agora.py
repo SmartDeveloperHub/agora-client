@@ -216,14 +216,18 @@ class PlanExecutor(object):
             def treat_resource_content(parse_format):
                 lock_acquired = False
                 try:
-                    response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]})
+                    log.debug('[Dereference][START] {}'.format(uri))
+                    response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=10)
+                except requests.Timeout:
+                    log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
+                    return True
                 except Exception:
                     log.debug('[Dereference][ERROR][GET] {}'.format(uri))
                     return False
 
                 try:
                     if response.status_code == 200:
-                        log.debug('Parsing RDF as {} of {}...'.format(parse_format, uri))
+                        log.debug('Parsing {}-RDF from {}...'.format(parse_format, uri))
                         g = Graph()
                         g.parse(source=StringIO.StringIO(response.content), format=parse_format)
                         log.debug('RDF parse of {} done!'.format(uri))
@@ -488,11 +492,11 @@ class PlanExecutor(object):
             trees = self.__plan_graph.subjects(RDF.type, AGORA.SearchTree)
             trees = sorted(trees, key=lambda x: get_tree_length(x))
 
+            type_triples = set([])
+
             thread = Thread(target=execute_plan)
             thread.daemon = True
             thread.start()
-
-            type_triples = set([])
 
             while not self.__completed or fragment_queue.not_empty:
                 try:
