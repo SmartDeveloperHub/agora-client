@@ -44,9 +44,11 @@ _accept_mimes = {'turtle': 'text/turtle', 'xml': 'application/rdf+xml'}
 
 
 class StopException(Exception):
-    def __init__(self):
-        super(StopException, self).__init__()
+    pass
 
+
+class FountainException(Exception):
+    pass
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
@@ -94,6 +96,14 @@ class Agora(object):
         """
         collector = FragmentCollector(self.__host, gp)
         return collector.get_fragment_generator(**kwargs)
+
+    @property
+    def prefixes(self):
+        response = requests.get(self.__host + '/prefixes')
+        if response.status_code == 200:
+            return response.json()
+
+        raise FountainException(response.text)
 
 
 class PlanExecutor(object):
