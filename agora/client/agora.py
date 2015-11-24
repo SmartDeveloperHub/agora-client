@@ -36,6 +36,7 @@ import gc
 import multiprocessing
 import logging
 from datetime import datetime as dt
+import traceback
 
 log = logging.getLogger('agora.client')
 
@@ -200,7 +201,7 @@ class PlanExecutor(object):
 
     def get_fragment_generator(self, on_load=None, on_seeds=None, on_plink=None, on_link=None, on_type=None,
                                on_type_validation=None, on_tree=None, workers=None, stop_event=None, queue_wait=None,
-                               queue_size=100):
+                               queue_size=100, provider=None):
         """
         Create a fragment generator that executes the search plan.
         :param on_load: Function to be called just after a new URI is dereferenced
@@ -222,12 +223,25 @@ class PlanExecutor(object):
         if stop_event is None:
             stop_event = Event()
 
+        def __create_graph(conjunctive=False):
+            if provider is None:
+                return ConjunctiveGraph()
+            else:
+                return provider.create(conjunctive)
+
+        def __destroy_graph(g):
+            if provider is not None:
+                provider.destroy(g)
+            else:
+                g.remove((None, None, None))
+                g.close()
+
         def __dereference_uri(tg, uri):
             def treat_resource_content(parse_format):
                 lock_acquired = False
                 try:
                     log.debug('[Dereference][START] {}'.format(uri))
-                    response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=10)
+                    response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=30)
                 except requests.Timeout:
                     log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
                     return True
@@ -235,46 +249,51 @@ class PlanExecutor(object):
                     log.debug('[Dereference][ERROR][GET] {}'.format(uri))
                     return False
 
-                try:
-                    if response.status_code == 200:
+                g = None
+                if response.status_code == 200:
+                    try:
                         log.debug('Parsing {}-RDF from {}...'.format(parse_format, uri))
-                        g = Graph()
+                        g = __create_graph()
                         g.parse(source=StringIO.StringIO(response.content), format=parse_format)
                         log.debug('RDF parse of {} done!'.format(uri))
                         log.debug('Trying to acquire lock for {}'.format(uri))
                         self.__resource_lock.acquire()
                         lock_acquired = True
                         tg.get_context(uri).__iadd__(g)
-                        g.remove((None, None, None))
                         log.debug('Trying to release lock for {}'.format(uri))
                         self.__resource_lock.release()
                         log.debug('[Dereference][OK] {}'.format(uri))
-                    return True
-                except SyntaxError:
-                    log.debug('[Dereference][PARSE] {}'.format(uri))
-                    return False
-                except ValueError as e:
-                    log.error(e.message)
-                    log.debug('[Dereference][ERROR] {}'.format(uri))
-                    return False
-                except (KeyboardInterrupt, SystemError, SystemExit):
-                    if lock_acquired:
-                        self.__resource_lock.release()
-                    raise
-
+                        return True
+                    except SyntaxError:
+                        log.debug('[Dereference][PARSE] {}'.format(uri))
+                        return False
+                    except ValueError as e:
+                        log.error(e.message)
+                        log.debug('[Dereference][ERROR] {}'.format(uri))
+                        return False
+                    except (KeyboardInterrupt, SystemError, SystemExit):
+                        if lock_acquired:
+                            self.__resource_lock.release()
+                        raise
+                    except Exception, e:
+                        log.warning(e.message)
+                        return False
+                    finally:
+                        if g is not None:
+                            __destroy_graph(g)
 
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
             more than once in the context of a search plan execution
             :param tg: The graph to be loaded with all the triples obtained from uri
-            :param uri: A resource uri to be dereferenced
+            :param uri: A resource urri to be dereferenced
             :return:
             """
             loaded = False
             self.__resource_lock.acquire()
             if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
                 self.__resource_queue[tg].append(uri)
-                if len(self.__resource_queue[tg]) > workers * 3:  # TODO: Adjust this capacity properly
+                if len(self.__resource_queue[tg]) > workers:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
                 for fmt in sorted(_accept_mimes.keys(), key=lambda x: x != self.__last_success_format):
@@ -294,13 +313,19 @@ class PlanExecutor(object):
 
         def __process_link_seed(seed, tree_graph, link, next_seeds):
             __check_stop()
-            __dereference_uri(tree_graph, seed)
+            try:
+                __dereference_uri(tree_graph, seed)
+            except:
+                traceback.print_exc()
             seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
             next_seeds.update(seed_pattern_objects)
 
         def __process_pattern_link_seed(seed, tree_graph, pattern_link):
             __check_stop()
-            __dereference_uri(tree_graph, seed)
+            try:
+                __dereference_uri(tree_graph, seed)
+            except:
+                traceback.print_exc()
             seed_pattern_objects = tree_graph.objects(subject=seed, predicate=pattern_link)
             return seed_pattern_objects
 
@@ -315,6 +340,7 @@ class PlanExecutor(object):
                         except KeyError:
                             pass
                         tg.close()
+                        __destroy_graph(tg)
                     self.__plan_graph = None
                     self.__uri_cache = None
                     self.__node_spaces = None
@@ -327,7 +353,7 @@ class PlanExecutor(object):
                 raise StopException()
 
         def __put_triple_in_queue(quad):
-            if (dt.now() - self.__last_iteration_ts).total_seconds() > 1:
+            if (dt.now() - self.__last_iteration_ts).total_seconds() > 100:
                 log.info('Aborted fragment collection!')
                 stop_event.set()
             fragment_queue.put(quad, timeout=queue_wait)
@@ -337,7 +363,8 @@ class PlanExecutor(object):
             Recursively search for relevant triples following the current node and all its successors
             :param node: Tree node to be followed
             :param tree_graph:
-            :param node_seeds: Set of collected seeds for the current node
+            :param seed_space:
+            :param seed: Collected seed for the current node
             :return:
             """
 
@@ -444,7 +471,8 @@ class PlanExecutor(object):
                             pass
             except Queue.Full:
                 stop_event.set()
-            except Exception:
+            except Exception, e:
+                log.error(e.message)
                 return
 
         def get_fragment_triples():
@@ -460,31 +488,35 @@ class PlanExecutor(object):
 
                     # Prepare an dedicated graph for the current tree and a set of type triples (?s a Concept)
                     # to be evaluated retrospectively
-                    tree_graph = ConjunctiveGraph()
-                    self.__resource_queue[tree_graph] = []
+                    tree_graph = __create_graph(conjunctive=True)
 
-                    # Get all seeds of the current tree
-                    seeds = list(self.__plan_graph.objects(tree, AGORA.hasSeed))
-                    if on_seeds is not None:
-                        on_seeds(seeds)
+                    try:
+                        self.__resource_queue[tree_graph] = []
 
-                    # Check if the tree root is a pattern node and in that case, adds a type triple to the
-                    # respective set
-                    root_pattern = list(self.__plan_graph.objects(tree, AGORA.byPattern))
-                    if len(root_pattern):
-                        pattern_node = list(self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
-                        seed_type = self.__patterns[pattern_node].get('type', None)
-                        [type_triples.add((pattern_node, sd, seed_type)) for sd in seeds]
+                        # Get all seeds of the current tree
+                        seeds = list(self.__plan_graph.objects(tree, AGORA.hasSeed))
+                        if on_seeds is not None:
+                            on_seeds(seeds)
 
-                    # Get the children of the root node and follow them recursively
-                    nxt = list(self.__plan_graph.objects(tree, AGORA.next))
-                    if len(nxt):
-                        # Prepare the list of seeds to start the exploration with, taking into account all search spaces
-                        # that were defined
-                        s_seeds = set(seeds)
-                        for sp in self.__spaces:
-                            for seed in s_seeds:
-                                __follow_node(tree, tree_graph, sp, seed)
+                        # Check if the tree root is a pattern node and in that case, adds a type triple to the
+                        # respective set
+                        root_pattern = list(self.__plan_graph.objects(tree, AGORA.byPattern))
+                        if len(root_pattern):
+                            pattern_node = list(self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
+                            seed_type = self.__patterns[pattern_node].get('type', None)
+                            [type_triples.add((pattern_node, sd, seed_type)) for sd in seeds]
+
+                        # Get the children of the root node and follow them recursively
+                        nxt = list(self.__plan_graph.objects(tree, AGORA.next))
+                        if len(nxt):
+                            # Prepare the list of seeds to start the exploration with, taking into account all search spaces
+                            # that were defined
+                            s_seeds = set(seeds)
+                            for sp in self.__spaces:
+                                for seed in s_seeds:
+                                    __follow_node(tree, tree_graph, sp, seed)
+                    finally:
+                        __destroy_graph(tree_graph)
 
                 self.__completed = True
 
@@ -510,7 +542,7 @@ class PlanExecutor(object):
 
             while not self.__completed or fragment_queue.not_empty:
                 try:
-                    (t, s, p, o) = fragment_queue.get(timeout=1)
+                    (t, s, p, o) = fragment_queue.get(timeout=0.1)
                     fragment_queue.task_done()
                     if p == RDF.type:
                         type_triples.add((t, s, o))
