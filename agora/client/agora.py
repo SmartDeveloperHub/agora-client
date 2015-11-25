@@ -37,6 +37,7 @@ import multiprocessing
 import logging
 from datetime import datetime as dt
 import traceback
+import time
 
 log = logging.getLogger('agora.client')
 
@@ -282,18 +283,20 @@ class PlanExecutor(object):
                         if g is not None:
                             __destroy_graph(g)
 
+                return False
+
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
             more than once in the context of a search plan execution
             :param tg: The graph to be loaded with all the triples obtained from uri
-            :param uri: A resource urri to be dereferenced
+            :param uri: A resource uri to be dereferenced
             :return:
             """
             loaded = False
             self.__resource_lock.acquire()
             if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
                 self.__resource_queue[tg].append(uri)
-                if len(self.__resource_queue[tg]) > workers:  # TODO: Adjust this capacity properly
+                if len(self.__resource_queue[tg]) > workers * 2:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
                 for fmt in sorted(_accept_mimes.keys(), key=lambda x: x != self.__last_success_format):
@@ -542,7 +545,7 @@ class PlanExecutor(object):
 
             while not self.__completed or fragment_queue.not_empty:
                 try:
-                    (t, s, p, o) = fragment_queue.get(timeout=0.1)
+                    (t, s, p, o) = fragment_queue.get(timeout=1)
                     fragment_queue.task_done()
                     if p == RDF.type:
                         type_triples.add((t, s, o))
