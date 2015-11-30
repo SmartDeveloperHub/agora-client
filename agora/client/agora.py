@@ -278,12 +278,12 @@ class PlanExecutor(object):
                         raise
                     except Exception, e:
                         log.warning(e.message)
-                        return False
+                        return True
                     finally:
                         if g is not None:
                             __destroy_graph(g)
 
-                return False
+                return True
 
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
