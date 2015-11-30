@@ -77,8 +77,8 @@ class Agora(object):
     Wrapper class for the FragmentCollector
     """
 
-    def __init__(self, host):
-        self.__host = host
+    def __init__(self, host='localhost', port=9001):
+        self.__host = 'http://{}:{}'.format(host, port)
 
     def get_fragment(self, gp, **kwargs):
         """
