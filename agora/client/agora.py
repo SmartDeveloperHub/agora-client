@@ -277,8 +277,9 @@ class PlanExecutor(object):
                             self.__resource_lock.release()
                         raise
                     except Exception, e:
+                        traceback.print_exc()
                         log.warning(e.message)
-                        return True
+                        return False
                     finally:
                         if g is not None:
                             __destroy_graph(g)
