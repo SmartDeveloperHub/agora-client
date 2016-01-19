@@ -25,7 +25,7 @@
 
 __author__ = 'Fernando Serena'
 
-from agora.client.agora import Agora
+from agora.client.execution import Agora
 from blessings import Terminal
 import sys
 from rdflib import Graph

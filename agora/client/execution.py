@@ -22,22 +22,27 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 
-__author__ = 'Fernando Serena'
-
-from rdflib.plugins.parsers.notation3 import BadSyntax
-import StringIO
-from urllib import urlencode
-import requests
-from rdflib import ConjunctiveGraph, Graph, RDF
-from rdflib.namespace import Namespace
-from threading import RLock, Thread, Event
 import Queue
-import gc
-import multiprocessing
+import StringIO
 import logging
-from datetime import datetime as dt
+import multiprocessing
 import traceback
-import time
+from _bsddb import DBNotFoundError
+from threading import RLock, Thread, Event
+
+import gc
+from datetime import datetime as dt
+
+import requests
+from rdflib import ConjunctiveGraph, RDF
+from rdflib.namespace import Namespace
+
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait, ALL_COMPLETED
+
+pool = ThreadPoolExecutor(max_workers=8)
+
+__author__ = 'Fernando Serena'
 
 log = logging.getLogger('agora.client')
 
@@ -49,11 +54,13 @@ class StopException(Exception):
     pass
 
 
-class FountainException(Exception):
-    pass
-
 def chunks(l, n):
-    """Yield successive n-sized chunks from l."""
+    """
+    Yield successive n-sized chunks from l.
+    :param l:
+    :param n:
+    :return:
+    """
     if n:
         for i in xrange(0, len(l), n):
             yield l[i:i + n]
@@ -70,42 +77,6 @@ def __extend_uri(prefixes, short):
         if short.startswith(prefix):
             return short.replace(prefix + ':', prefixes[prefix])
     return short
-
-
-class Agora(object):
-    """
-    Wrapper class for the FragmentCollector
-    """
-
-    def __init__(self, host='localhost', port=9001):
-        self.__host = 'http://{}:{}'.format(host, port)
-
-    def get_fragment(self, gp, **kwargs):
-        """
-        Return a complete fragment for a given gp.
-        :param gp: A graph pattern
-        :return:
-        """
-        collector = FragmentCollector(self.__host, gp)
-        return collector.get_fragment(**kwargs)
-
-    def get_fragment_generator(self, gp, **kwargs):
-        """
-        Return a fragment generator for a given gp.
-        :param gp:
-        :param kwargs:
-        :return:
-        """
-        collector = FragmentCollector(self.__host, gp)
-        return collector.get_fragment_generator(**kwargs)
-
-    @property
-    def prefixes(self):
-        response = requests.get(self.__host + '/prefixes')
-        if response.status_code == 200:
-            return response.json()
-
-        raise FountainException(response.text)
 
 
 class PlanExecutor(object):
@@ -212,6 +183,8 @@ class PlanExecutor(object):
         :param on_type: Function to be called when search for a type triple
         :param on_type_validation: Function to be called just after a type is validated
         :param on_tree: Function to be called just before a tree is going to be explored
+        :param provider:
+        :param queue_size:
         :return:
         """
 
@@ -241,10 +214,13 @@ class PlanExecutor(object):
             def treat_resource_content(parse_format):
                 lock_acquired = False
                 try:
-                    log.debug('[Dereference][START] {}'.format(uri))
+                    log.debug('[Dereference][START] {}'.format(uri.encode('utf-8')))
                     response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=30)
                 except requests.Timeout:
                     log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
+                    return True
+                except UnicodeEncodeError:
+                    log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
                     return True
                 except Exception:
                     log.debug('[Dereference][ERROR][GET] {}'.format(uri))
@@ -276,9 +252,12 @@ class PlanExecutor(object):
                         if lock_acquired:
                             self.__resource_lock.release()
                         raise
+                    except DBNotFoundError, e:
+                        log.error('[Dereference][ERROR] {}'.format(uri))
+                        return True
                     except Exception, e:
+                        log.error('[Dereference][ERROR] {}'.format(uri))
                         traceback.print_exc()
-                        log.warning(e.message)
                         return False
                     finally:
                         if g is not None:
@@ -436,7 +415,7 @@ class PlanExecutor(object):
                                         if check_type:
                                             __dereference_uri(tree_graph, seed_object)
                                             types = list(
-                                                tree_graph.objects(subject=seed_object, predicate=RDF.type))
+                                                    tree_graph.objects(subject=seed_object, predicate=RDF.type))
                                             if obj_type in types:
                                                 self.__fragment.add((seed_object, obj_type))
                                                 __put_triple_in_queue(type_triple)
@@ -460,22 +439,27 @@ class PlanExecutor(object):
                                 for s in chunk:
                                     try:
                                         workers_queue.put_nowait(s)
-                                        th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
-                                        th.daemon = True
-                                        th.start()
-                                        threads.append(th)
+                                        future = pool.submit(__follow_node, n, tree_graph, seed_space, s)
+
+                                        # th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
+                                        # th.daemon = True
+                                        # th.start()
+                                        threads.append(future)
                                     except Queue.Full:
                                         # If all threads are busy...I'll do it myself
                                         __follow_node(n, tree_graph, seed_space, s)
                                     except Queue.Empty:
                                         pass
-                                [th.join() for th in threads]
+
+                                wait(threads)
+                                # [th.join() for th in threads]
                                 [(workers_queue.get_nowait(), workers_queue.task_done()) for _ in threads]
                         except (IndexError, KeyError):
                             pass
             except Queue.Full:
                 stop_event.set()
             except Exception, e:
+                traceback.print_exc()
                 log.error(e.message)
                 return
 
@@ -506,7 +490,8 @@ class PlanExecutor(object):
                         # respective set
                         root_pattern = list(self.__plan_graph.objects(tree, AGORA.byPattern))
                         if len(root_pattern):
-                            pattern_node = list(self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
+                            pattern_node = list(
+                                    self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
                             seed_type = self.__patterns[pattern_node].get('type', None)
                             [type_triples.add((pattern_node, sd, seed_type)) for sd in seeds]
 
@@ -570,37 +555,3 @@ class PlanExecutor(object):
                 yield (t, s, RDF.type, o)
 
         return get_fragment_triples(), self.__plan_graph.namespaces(), self.__plan_graph
-
-
-class FragmentCollector(object):
-    """ Class for interacting with the Agora planner and executing the plans for a certain graph pattern.
-    """
-
-    def __init__(self, planner_uri, gp):
-        self.__planner = planner_uri
-        self.__graph_pattern = gp
-
-        # Request a search plan on initialization and extract patterns and spaces
-        plan_graph = self.__get_gp_plan(self.__graph_pattern)
-        self.__plan_executor = PlanExecutor(plan_graph)
-
-    def __get_gp_plan(self, gp):
-        """
-        Request the planner a search plan for a given gp and returns the plan as a graph.
-        :param gp:
-        :return:
-        """
-        query = urlencode({'gp': gp})
-        response = requests.get('{}/plan?'.format(self.__planner) + query, headers={'Accept': 'text/turtle'})
-        graph = Graph()
-        try:
-            graph.parse(source=StringIO.StringIO(response.text), format='turtle')
-        except BadSyntax:
-            pass
-        return graph
-
-    def get_fragment(self, **kwargs):
-        return self.__plan_executor.get_fragment(**kwargs)
-
-    def get_fragment_generator(self, **kwargs):
-        return self.__plan_executor.get_fragment_generator(**kwargs)
