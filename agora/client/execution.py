@@ -38,7 +38,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait
 from rdflib import ConjunctiveGraph, RDF
 
-from agora.client import AGORA
+from agora.client.namespaces import AGORA
 
 pool = ThreadPoolExecutor(max_workers=8)
 
