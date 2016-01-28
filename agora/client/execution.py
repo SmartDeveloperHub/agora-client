@@ -27,18 +27,18 @@ import StringIO
 import logging
 import multiprocessing
 import traceback
-from _bsddb import DBNotFoundError
 from threading import RLock, Thread, Event
 
 import gc
+from _bsddb import DBNotFoundError
 from datetime import datetime as dt
 
 import requests
-from rdflib import ConjunctiveGraph, RDF
-from rdflib.namespace import Namespace
-
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import wait, ALL_COMPLETED
+from concurrent.futures import wait
+from rdflib import ConjunctiveGraph, RDF
+
+from agora.client import AGORA
 
 pool = ThreadPoolExecutor(max_workers=8)
 
@@ -46,7 +46,6 @@ __author__ = 'Fernando Serena'
 
 log = logging.getLogger('agora.client')
 
-AGORA = Namespace('http://agora.org#')
 _accept_mimes = {'turtle': 'text/turtle', 'xml': 'application/rdf+xml'}
 
 
