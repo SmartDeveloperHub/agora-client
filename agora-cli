@@ -23,15 +23,16 @@
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 """
 
-__author__ = 'Fernando Serena'
-
-from agora.client.execution import Agora
-from blessings import Terminal
-import sys
-from rdflib import Graph
-from time import time
 import click
+from time import time
+
+from agora.client.wrapper import Agora
+from blessings import Terminal
+from rdflib import Graph
 from requests import ConnectionError
+
+
+__author__ = 'Fernando Serena'
 
 total_derefs = 0
 total_triples = 0
@@ -60,17 +61,17 @@ def out_seeds(seeds):
 
 
 def out_plink(uri, objs, sp):
-    print term.green + '({}) Looking for triples with property {} at {}'.\
+    print term.green + '({}) Looking for triples with property {} at {}'. \
         format(sp, uri.n3(graph.namespace_manager), stringify_uri_list(objs)) + term.normal
 
 
 def out_link(uri, objs, sp):
-    print term.green + '({}) Following {} from {}'.\
+    print term.green + '({}) Following {} from {}'. \
         format(sp, uri.n3(graph.namespace_manager), stringify_uri_list(objs)) + term.normal
 
 
 def out_type(uri, objs, sp):
-    print term.green + "({}) Searching {}'s at {}".\
+    print term.green + "({}) Searching {}'s at {}". \
         format(sp, uri.n3(graph.namespace_manager), stringify_uri_list(objs)) + term.normal
 
 
@@ -82,16 +83,19 @@ def out_type_validation((_, s, p, o)):
 def out_tree(node):
     print term.bold_blue("Starting tree navigation {}".format(node.n3(graph.namespace_manager)))
 
+
 term = Terminal()
 graph = Graph()
-print term.bold + term.underline + 'Agora Console Client v0.2' + term.normal
+print term.bold + term.underline + 'Agora Console Client v0.3' + term.normal
+
 
 @click.command()
-@click.option('--host', default='http://localhost:9001', help='URL of the Agora service.')
+@click.option('--host', default='localhost', help='Hostname of the Agora service.')
+@click.option('--port', default=9001, help='Port that the Agora is listening.')
 @click.option('--gp', default='{}', help='The graph pattern of your required fragment.')
 @click.option('--u', is_flag=True, help='Unnatended plan execution.')
-def get_fragment(host, gp, u):
-    agora = Agora(host)
+def get_fragment(host, port, gp, u):
+    agora = Agora(host, port)
 
     print 'Trying to retrieve a fragment for:',
     print term.bold + gp + term.normal
@@ -102,7 +106,8 @@ def get_fragment(host, gp, u):
     try:
         fragment, namespaces, plan = agora.get_fragment_generator(gp, on_load=out_load, on_seeds=out_seeds,
                                                                   on_plink=out_plink, on_link=out_link,
-                                                                  on_type=out_type, on_type_validation=out_type_validation,
+                                                                  on_type=out_type,
+                                                                  on_type_validation=out_type_validation,
                                                                   on_tree=out_tree)
     except ConnectionError, e:
         print term.red + "\nCouldn't connect to {} due to:\n{}".format(host, e.message) + term.normal
@@ -122,7 +127,7 @@ def get_fragment(host, gp, u):
     for _, s, p, o in fragment:
         graph.add((s, p, o))
         final_triples += 1
-        print term.bold_green_on_bright_green('{} {} {} .'.format(s.n3(graph.namespace_manager),
+        print term.bold_green('{} {} {} .'.format(s.n3(graph.namespace_manager),
                                                                   p.n3(graph.namespace_manager),
                                                                   o.n3(graph.namespace_manager)))
         if not u:
@@ -135,6 +140,7 @@ def get_fragment(host, gp, u):
     print 'Resources dereferenced = {}'.format(term.bold(str(total_derefs)))
     print 'Triples collected = {}'.format(term.bold(str(total_triples)))
     print 'Fragment triples = {}'.format(term.bold(str(final_triples)))
+
 
 if __name__ == '__main__':
     get_fragment()
