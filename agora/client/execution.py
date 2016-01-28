@@ -210,10 +210,13 @@ class PlanExecutor(object):
                 g.close()
 
         def __dereference_uri(tg, uri):
+
+            uri = uri.encode('utf-8')
+
             def treat_resource_content(parse_format):
                 lock_acquired = False
                 try:
-                    log.debug('[Dereference][START] {}'.format(uri.encode('utf-8')))
+                    log.debug('[Dereference][START] {}'.format(uri))
                     response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=30)
                 except requests.Timeout:
                     log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
@@ -244,8 +247,8 @@ class PlanExecutor(object):
                         log.debug('[Dereference][PARSE] {}'.format(uri))
                         return False
                     except ValueError as e:
-                        log.error(e.message)
                         log.debug('[Dereference][ERROR] {}'.format(uri))
+                        traceback.print_exc()
                         return False
                     except (KeyboardInterrupt, SystemError, SystemExit):
                         if lock_acquired:
@@ -253,6 +256,7 @@ class PlanExecutor(object):
                         raise
                     except DBNotFoundError, e:
                         log.error('[Dereference][ERROR] {}'.format(uri))
+                        traceback.print_exc()
                         return True
                     except Exception, e:
                         log.error('[Dereference][ERROR] {}'.format(uri))
