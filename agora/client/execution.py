@@ -40,7 +40,7 @@ from rdflib import ConjunctiveGraph, RDF
 
 from agora.client.namespaces import AGORA
 
-pool = ThreadPoolExecutor(max_workers=8)
+pool = ThreadPoolExecutor(max_workers=100)
 
 __author__ = 'Fernando Serena'
 
@@ -225,8 +225,9 @@ class PlanExecutor(object):
                     log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
                     return True
                 except Exception:
+                    traceback.print_exc()
                     log.debug('[Dereference][ERROR][GET] {}'.format(uri))
-                    return False
+                    return True
 
                 g = None
                 if response.status_code == 200:
@@ -257,11 +258,11 @@ class PlanExecutor(object):
                     except DBNotFoundError, e:
                         log.error('[Dereference][ERROR] {}'.format(uri))
                         traceback.print_exc()
-                        return True
+                        return False
                     except Exception, e:
                         log.error('[Dereference][ERROR] {}'.format(uri))
                         traceback.print_exc()
-                        return False
+                        return True
                     finally:
                         if g is not None:
                             __destroy_graph(g)
@@ -447,6 +448,7 @@ class PlanExecutor(object):
                                         # th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
                                         # th.daemon = True
                                         # th.start()
+                                        # threads.append(th)
                                         threads.append(future)
                                     except Queue.Full:
                                         # If all threads are busy...I'll do it myself
