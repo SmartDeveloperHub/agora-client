@@ -40,7 +40,7 @@ from rdflib import ConjunctiveGraph, RDF
 
 from agora.client.namespaces import AGORA
 
-pool = ThreadPoolExecutor(max_workers=100)
+pool = ThreadPoolExecutor(max_workers=20)
 
 __author__ = 'Fernando Serena'
 
@@ -444,11 +444,6 @@ class PlanExecutor(object):
                                     try:
                                         workers_queue.put_nowait(s)
                                         future = pool.submit(__follow_node, n, tree_graph, seed_space, s)
-
-                                        # th = Thread(target=__follow_node, args=(n, tree_graph, seed_space, s))
-                                        # th.daemon = True
-                                        # th.start()
-                                        # threads.append(th)
                                         threads.append(future)
                                     except Queue.Full:
                                         # If all threads are busy...I'll do it myself
