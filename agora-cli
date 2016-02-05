@@ -31,7 +31,6 @@ from blessings import Terminal
 from rdflib import Graph
 from requests import ConnectionError
 
-
 __author__ = 'Fernando Serena'
 
 total_derefs = 0
@@ -127,14 +126,15 @@ def get_fragment(host, port, gp, u):
     for _, s, p, o in fragment:
         graph.add((s, p, o))
         final_triples += 1
-        print term.bold_green(u'{} {} {} .'.format(s.n3(graph.namespace_manager),
-                                                                  p.n3(graph.namespace_manager),
-                                                                  o.n3(graph.namespace_manager)))
+        print u'{} {} {} .'.format(s.n3(graph.namespace_manager),
+                                   p.n3(graph.namespace_manager),
+                                   o.n3(graph.namespace_manager))
         if not u:
             raw_input(term.bold_blue('(more)'))
 
     print term.bold_yellow('\nFragment:')
-    print term.yellow(graph.serialize(format='turtle'))
+    fragment = unicode(graph.serialize(format='turtle'), errors='ignore')
+    print term.yellow(fragment)
 
     print term.bold_white('Summary:')
     print 'Resources dereferenced = {}'.format(term.bold(str(total_derefs)))
