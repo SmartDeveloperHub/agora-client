@@ -127,7 +127,7 @@ def get_fragment(host, port, gp, u):
     for _, s, p, o in fragment:
         graph.add((s, p, o))
         final_triples += 1
-        print term.bold_green('{} {} {} .'.format(s.n3(graph.namespace_manager),
+        print term.bold_green(u'{} {} {} .'.format(s.n3(graph.namespace_manager),
                                                                   p.n3(graph.namespace_manager),
                                                                   o.n3(graph.namespace_manager)))
         if not u:

@@ -2,3 +2,4 @@ rdflib
 requests
 blessings
 futures
+click

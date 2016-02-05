@@ -28,7 +28,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="Agora-Client",
-    version="0.4.12",
+    version="0.4.13",
     author="Fernando Serena",
     author_email="fernando.serena@centeropenmiddleware.com",
     description="An Agora client for Python that requests and executes search plans for graph patterns",
@@ -38,7 +38,7 @@ setup(
     download_url="https://github.com/smartdeveloperhub/agora-client/tarball/0.4.8-alpha1",
     packages=find_packages(exclude=['ez_setup', 'examples', 'tests']),
     namespace_packages=['agora', 'agora.client'],
-    install_requires=['requests', 'rdflib', 'blessings', 'futures'],
+    install_requires=['requests', 'rdflib', 'blessings', 'futures', 'click'],
     classifiers=[],
     scripts=['agora-cli']
 )
