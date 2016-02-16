@@ -36,7 +36,7 @@ from datetime import datetime as dt
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait
-from rdflib import ConjunctiveGraph, RDF
+from rdflib import ConjunctiveGraph, RDF, URIRef
 
 from agora.client.namespaces import AGORA
 
@@ -146,7 +146,13 @@ class PlanExecutor(object):
                 self.__patterns[tp]['property'] = tp_pred
                 tp_obj = list(self.__plan_graph.objects(tp, predicate=AGORA.object)).pop()
                 if (tp_obj, RDF.type, AGORA.Literal) in self.__plan_graph:  # In case O is a Literal
-                    self.__patterns[tp]['filter'] = list(self.__plan_graph.objects(tp_obj, AGORA.value)).pop()
+                    self.__patterns[tp]['filter_object'] = list(self.__plan_graph.objects(tp_obj, AGORA.value)).pop()
+                elif isinstance(tp_obj, URIRef):
+                    self.__patterns[tp]['filter_object'] = tp_obj
+
+                tp_sub = list(self.__plan_graph.objects(tp, predicate=AGORA.subject)).pop()
+                if isinstance(tp_sub, URIRef):
+                    self.__patterns[tp]['filter_subject'] = tp_sub
 
             # Get all pattern nodes (those that have a byPattern properties) of the search plan and search backwards
             # in order to set the scope of each search space.
@@ -225,7 +231,7 @@ class PlanExecutor(object):
                     log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
                     return True
                 except Exception:
-                    traceback.print_exc()
+                    # traceback.print_exc()
                     log.debug('[Dereference][ERROR][GET] {}'.format(uri))
                     return True
 
@@ -249,7 +255,7 @@ class PlanExecutor(object):
                         return False
                     except ValueError as e:
                         log.debug('[Dereference][ERROR] {}'.format(uri))
-                        traceback.print_exc()
+                        # traceback.print_exc()
                         return False
                     except (KeyboardInterrupt, SystemError, SystemExit):
                         if lock_acquired:
@@ -257,11 +263,11 @@ class PlanExecutor(object):
                         raise
                     except DBNotFoundError, e:
                         log.error('[Dereference][ERROR] {}'.format(uri))
-                        traceback.print_exc()
+                        # traceback.print_exc()
                         return False
                     except Exception, e:
                         log.error('[Dereference][ERROR] {}'.format(uri))
-                        traceback.print_exc()
+                        # traceback.print_exc()
                         return True
                     finally:
                         if g is not None:
@@ -360,7 +366,7 @@ class PlanExecutor(object):
                 Check if a node is a pattern node and has an object filter
                 """
                 p_node = list(self.__plan_graph.objects(subject=x, predicate=AGORA.byPattern))
-                return len(p_node) and 'filter' in self.__patterns[p_node.pop()]
+                return len(p_node) and 'filter_object' in self.__patterns[p_node.pop()]
 
             try:
                 # Get the sorted list of current node's successors
@@ -385,15 +391,20 @@ class PlanExecutor(object):
                             if pattern_space != seed_space or seed in self.__subjects_to_ignore[pattern_space]:
                                 continue
 
+                            subject_filter = self.__patterns[pattern].get('filter_subject', None)
+                            if subject_filter is not None and seed != subject_filter:
+                                continue
+
                             pattern_link = self.__patterns[pattern].get('property', None)
 
                             # If pattern is of type '?s prop O'...
                             if pattern_link is not None:
                                 if (seed, pattern_link) not in self.__fragment:
-                                    obj_filter = self.__patterns[pattern].get('filter', None)
+                                    obj_filter = self.__patterns[pattern].get('filter_object', None)
                                     if on_plink is not None:
                                         on_plink(pattern_link, [seed], pattern_space)
 
+                                    apply_filter = True
                                     for seed_object in __process_pattern_link_seed(seed, tree_graph, pattern_link):
                                         __check_stop()
                                         quad = (pattern, seed, pattern_link, seed_object)
@@ -401,8 +412,9 @@ class PlanExecutor(object):
                                                 'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
                                             self.__fragment.add((seed, pattern_link))
                                             __put_triple_in_queue(quad)
-                                        else:
-                                            self.__subjects_to_ignore[pattern_space].add(seed)
+                                            apply_filter = False
+                                    if obj_filter is not None and apply_filter:
+                                        self.__subjects_to_ignore[pattern_space].add(seed)
 
                             # If pattern is of type '?s a Concept'...
                             obj_type = self.__patterns[pattern].get('type', None)
