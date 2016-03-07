@@ -28,17 +28,17 @@ import logging
 import multiprocessing
 import traceback
 from threading import RLock, Thread, Event
+from xml.sax import SAXParseException
 
 import gc
 from _bsddb import DBNotFoundError
 from datetime import datetime as dt
 
 import requests
+from agora.client.namespaces import AGORA
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait
 from rdflib import ConjunctiveGraph, RDF, URIRef
-
-from agora.client.namespaces import AGORA
 
 pool = ThreadPoolExecutor(max_workers=20)
 
@@ -178,7 +178,7 @@ class PlanExecutor(object):
 
     def get_fragment_generator(self, on_load=None, on_seeds=None, on_plink=None, on_link=None, on_type=None,
                                on_type_validation=None, on_tree=None, workers=None, stop_event=None, queue_wait=None,
-                               queue_size=100, provider=None):
+                               queue_size=100, provider=None, lazy=True):
         """
         Create a fragment generator that executes the search plan.
         :param on_load: Function to be called just after a new URI is dereferenced
@@ -190,6 +190,10 @@ class PlanExecutor(object):
         :param on_tree: Function to be called just before a tree is going to be explored
         :param provider:
         :param queue_size:
+        :param workers:
+        :param stop_event:
+        :param queue_wait:
+        :param lazy:
         :return:
         """
 
@@ -231,7 +235,6 @@ class PlanExecutor(object):
                     log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
                     return True
                 except Exception:
-                    # traceback.print_exc()
                     log.debug('[Dereference][ERROR][GET] {}'.format(uri))
                     return True
 
@@ -251,23 +254,23 @@ class PlanExecutor(object):
                         log.debug('[Dereference][OK] {}'.format(uri))
                         return True
                     except SyntaxError:
-                        log.debug('[Dereference][PARSE] {}'.format(uri))
+                        log.error('[Dereference][ERROR][PARSE] {}'.format(uri))
                         return False
-                    except ValueError as e:
-                        log.debug('[Dereference][ERROR] {}'.format(uri))
-                        # traceback.print_exc()
+                    except ValueError:
+                        log.debug('[Dereference][ERROR][VAL] {}'.format(uri))
                         return False
                     except (KeyboardInterrupt, SystemError, SystemExit):
                         if lock_acquired:
                             self.__resource_lock.release()
                         raise
-                    except DBNotFoundError, e:
-                        log.error('[Dereference][ERROR] {}'.format(uri))
-                        # traceback.print_exc()
+                    except DBNotFoundError:
+                        log.error('[Dereference][ERROR][DB] {}'.format(uri))
                         return False
-                    except Exception, e:
+                    except SAXParseException:
+                        log.error('[Dereference][ERROR][SAX] {}'.format(uri))
+                        return False
+                    except Exception:
                         log.error('[Dereference][ERROR] {}'.format(uri))
-                        # traceback.print_exc()
                         return True
                     finally:
                         if g is not None:
@@ -309,7 +312,7 @@ class PlanExecutor(object):
             try:
                 __dereference_uri(tree_graph, seed)
             except:
-                traceback.print_exc()
+                pass
             seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
             next_seeds.update(seed_pattern_objects)
 
@@ -318,7 +321,7 @@ class PlanExecutor(object):
             try:
                 __dereference_uri(tree_graph, seed)
             except:
-                traceback.print_exc()
+                pass
             seed_pattern_objects = tree_graph.objects(subject=seed, predicate=pattern_link)
             return seed_pattern_objects
 
@@ -405,16 +408,20 @@ class PlanExecutor(object):
                                         on_plink(pattern_link, [seed], pattern_space)
 
                                     apply_filter = True
-                                    for seed_object in __process_pattern_link_seed(seed, tree_graph, pattern_link):
-                                        __check_stop()
-                                        quad = (pattern, seed, pattern_link, seed_object)
-                                        if obj_filter is None or u''.join(seed_object).encode(
-                                                'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
-                                            self.__fragment.add((seed, pattern_link))
-                                            __put_triple_in_queue(quad)
-                                            apply_filter = False
-                                    if obj_filter is not None and apply_filter:
-                                        self.__subjects_to_ignore[pattern_space].add(seed)
+                                    try:
+                                        for seed_object in list(
+                                                __process_pattern_link_seed(seed, tree_graph, pattern_link)):
+                                            __check_stop()
+                                            quad = (pattern, seed, pattern_link, seed_object)
+                                            if obj_filter is None or u''.join(seed_object).encode(
+                                                    'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
+                                                self.__fragment.add((seed, pattern_link))
+                                                __put_triple_in_queue(quad)
+                                                apply_filter = False
+                                        if obj_filter is not None and apply_filter:
+                                            self.__subjects_to_ignore[pattern_space].add(seed)
+                                    except AttributeError, e:
+                                        log.warning('Trying to find {} objects of {}: {}'.format(link, seed, e.message))
 
                             # If pattern is of type '?s a Concept'...
                             obj_type = self.__patterns[pattern].get('type', None)
@@ -424,20 +431,26 @@ class PlanExecutor(object):
                                     on_type(obj_type, [seed], pattern_space)
 
                                 __dereference_uri(tree_graph, seed)
-                                for seed_object in tree_graph.objects(subject=seed, predicate=link):
-                                    type_triple = (pattern, seed_object, RDF.type, obj_type)
-                                    # In some cases, it is necessary to verify the type of the seed
-                                    if (seed_object, obj_type) not in self.__fragment:
-                                        if check_type:
-                                            __dereference_uri(tree_graph, seed_object)
-                                            types = list(
+                                try:
+                                    seed_objects = list(tree_graph.objects(subject=seed, predicate=link))
+                                    for seed_object in seed_objects:
+                                        type_triple = (pattern, seed_object, RDF.type, obj_type)
+                                        # In some cases, it is necessary to verify the type of the seed
+                                        if (seed_object, obj_type) not in self.__fragment:
+                                            if check_type:
+                                                __dereference_uri(tree_graph, seed_object)
+                                                types = list(
                                                     tree_graph.objects(subject=seed_object, predicate=RDF.type))
-                                            if obj_type in types:
+                                                if obj_type in types:
+                                                    self.__fragment.add((seed_object, obj_type))
+                                                    __put_triple_in_queue(type_triple)
+                                                else:
+                                                    self.__subjects_to_ignore[pattern_space].add(seed_object)
+                                            else:
                                                 self.__fragment.add((seed_object, obj_type))
                                                 __put_triple_in_queue(type_triple)
-                                        else:
-                                            self.__fragment.add((seed_object, obj_type))
-                                            __put_triple_in_queue(type_triple)
+                                except AttributeError, e:
+                                    log.warning('Trying to find {} objects of {}: {}'.format(link, seed, e.message))
 
                         # If the current node is not a leaf... go on finding seeds for the successors
                         if link is not None and seed not in self.__subjects_to_ignore[seed_space]:
@@ -464,7 +477,6 @@ class PlanExecutor(object):
                                         pass
 
                                 wait(threads)
-                                # [th.join() for th in threads]
                                 [(workers_queue.get_nowait(), workers_queue.task_done()) for _ in threads]
                         except (IndexError, KeyError):
                             pass
@@ -503,21 +515,24 @@ class PlanExecutor(object):
                         root_pattern = list(self.__plan_graph.objects(tree, AGORA.byPattern))
                         if len(root_pattern):
                             pattern_node = list(
-                                    self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
+                                self.__plan_graph.objects(subject=tree, predicate=AGORA.byPattern)).pop()
                             seed_type = self.__patterns[pattern_node].get('type', None)
                             [type_triples.add((pattern_node, sd, seed_type)) for sd in seeds]
 
                         # Get the children of the root node and follow them recursively
                         nxt = list(self.__plan_graph.objects(tree, AGORA.next))
                         if len(nxt):
-                            # Prepare the list of seeds to start the exploration with, taking into account all search spaces
-                            # that were defined
+                            # Prepare the list of seeds to start the exploration with, taking into account all
+                            # search spaces that were defined
                             s_seeds = set(seeds)
                             for sp in self.__spaces:
                                 for seed in s_seeds:
                                     __follow_node(tree, tree_graph, sp, seed)
                     finally:
                         __destroy_graph(tree_graph)
+
+                    if lazy and found_data:
+                        break
 
                 self.__completed = True
 
@@ -541,9 +556,11 @@ class PlanExecutor(object):
             thread.daemon = True
             thread.start()
 
+            found_data = False
             while not self.__completed or fragment_queue.not_empty:
                 try:
                     (t, s, p, o) = fragment_queue.get(timeout=1)
+                    found_data = True
                     fragment_queue.task_done()
                     if p == RDF.type:
                         type_triples.add((t, s, o))
