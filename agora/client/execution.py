@@ -206,11 +206,11 @@ class PlanExecutor(object):
         if stop_event is None:
             stop_event = Event()
 
-        def __create_graph(conjunctive=False):
+        def __create_graph(conjunctive=False, gid=None):
             if provider is None:
                 return ConjunctiveGraph()
             else:
-                return provider.create(conjunctive)
+                return provider.create(conjunctive=conjunctive, gid=gid)
 
         def __destroy_graph(g):
             if provider is not None:
@@ -219,64 +219,72 @@ class PlanExecutor(object):
                 g.remove((None, None, None))
                 g.close()
 
+        def __open_graph(gid):
+            if provider is None:
+                return None
+            else:
+                return provider.open(gid=gid)
+
         def __dereference_uri(tg, uri):
 
             uri = uri.encode('utf-8')
 
             def treat_resource_content(parse_format):
+                g = __open_graph(uri)
+
+                if g is None:
+                    try:
+                        # log.debug('[Dereference][START] {}'.format(uri))
+                        response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=30)
+                    except requests.Timeout:
+                        log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
+                        return True
+                    except UnicodeEncodeError:
+                        log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
+                        return True
+                    except Exception:
+                        log.debug('[Dereference][ERROR][GET] {}'.format(uri))
+                        return True
+
+                    if response.status_code == 200:
+                        try:
+                            # log.debug('Parsing {}-RDF from {}...'.format(parse_format, uri))
+                            g = __create_graph(gid=uri)
+                            g.parse(source=StringIO.StringIO(response.content), format=parse_format)
+                            # log.debug('RDF parse of {} done!'.format(uri))
+                            # log.debug('Trying to acquire lock for {}'.format(uri))
+                        except SyntaxError:
+                            log.error('[Dereference][ERROR][PARSE] {}'.format(uri))
+                            return False
+                        except ValueError:
+                            log.debug('[Dereference][ERROR][VAL] {}'.format(uri))
+                            return False
+                        except DBNotFoundError:
+                            log.error('[Dereference][ERROR][DB] {}'.format(uri))
+                            return False
+                        except SAXParseException:
+                            log.error('[Dereference][ERROR][SAX] {}'.format(uri))
+                            return False
+                        except Exception:
+                            traceback.print_exc()
+                            log.error('[Dereference][ERROR] {}'.format(uri))
+                            return True
+
                 lock_acquired = False
                 try:
-                    log.debug('[Dereference][START] {}'.format(uri))
-                    response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=30)
-                except requests.Timeout:
-                    log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
+                    self.__resource_lock.acquire()
+                    lock_acquired = True
+                    tg.get_context(uri).__iadd__(g)
+                    self.__resource_lock.release()
+                    # log.debug('[Dereference][OK] {}'.format(uri))
                     return True
-                except UnicodeEncodeError:
-                    log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
-                    return True
-                except Exception:
-                    log.debug('[Dereference][ERROR][GET] {}'.format(uri))
-                    return True
-
-                g = None
-                if response.status_code == 200:
-                    try:
-                        log.debug('Parsing {}-RDF from {}...'.format(parse_format, uri))
-                        g = __create_graph()
-                        g.parse(source=StringIO.StringIO(response.content), format=parse_format)
-                        log.debug('RDF parse of {} done!'.format(uri))
-                        log.debug('Trying to acquire lock for {}'.format(uri))
-                        self.__resource_lock.acquire()
-                        lock_acquired = True
-                        tg.get_context(uri).__iadd__(g)
-                        log.debug('Trying to release lock for {}'.format(uri))
+                except (KeyboardInterrupt, SystemError, SystemExit):
+                    if lock_acquired:
                         self.__resource_lock.release()
-                        log.debug('[Dereference][OK] {}'.format(uri))
-                        return True
-                    except SyntaxError:
-                        log.error('[Dereference][ERROR][PARSE] {}'.format(uri))
-                        return False
-                    except ValueError:
-                        log.debug('[Dereference][ERROR][VAL] {}'.format(uri))
-                        return False
-                    except (KeyboardInterrupt, SystemError, SystemExit):
-                        if lock_acquired:
-                            self.__resource_lock.release()
-                        raise
-                    except DBNotFoundError:
-                        log.error('[Dereference][ERROR][DB] {}'.format(uri))
-                        return False
-                    except SAXParseException:
-                        log.error('[Dereference][ERROR][SAX] {}'.format(uri))
-                        return False
-                    except Exception:
-                        log.error('[Dereference][ERROR] {}'.format(uri))
-                        return True
-                    finally:
-                        if g is not None:
-                            __destroy_graph(g)
-
-                return True
+                    raise
+                finally:
+                    if g is not None:
+                        __destroy_graph(g)
 
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
@@ -289,9 +297,10 @@ class PlanExecutor(object):
             self.__resource_lock.acquire()
             if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
                 self.__resource_queue[tg].append(uri)
-                if len(self.__resource_queue[tg]) > workers * 2:  # TODO: Adjust this capacity properly
+                if len(self.__resource_queue[tg]) > workers * 10:  # TODO: Adjust this capacity properly
                     tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
                 self.__resource_lock.release()
+
                 for fmt in sorted(_accept_mimes.keys(), key=lambda x: x != self.__last_success_format):
                     loaded = treat_resource_content(fmt)
                     if loaded:
@@ -311,10 +320,11 @@ class PlanExecutor(object):
             __check_stop()
             try:
                 __dereference_uri(tree_graph, seed)
-            except:
-                pass
-            seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
-            next_seeds.update(seed_pattern_objects)
+                seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
+                next_seeds.update(seed_pattern_objects)
+            except Exception, e:
+                traceback.print_exc()
+                log.warning(e.message)
 
         def __process_pattern_link_seed(seed, tree_graph, pattern_link):
             __check_stop()
