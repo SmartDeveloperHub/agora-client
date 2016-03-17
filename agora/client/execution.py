@@ -206,85 +206,77 @@ class PlanExecutor(object):
         if stop_event is None:
             stop_event = Event()
 
-        def __create_graph(conjunctive=False, gid=None):
+        def __create_graph():
             if provider is None:
                 return ConjunctiveGraph()
             else:
-                return provider.create(conjunctive=conjunctive, gid=gid)
+                return provider.create(conjunctive=True)
 
-        def __destroy_graph(g):
+        def __release_graph(g):
             if provider is not None:
-                provider.destroy(g)
+                provider.release(g)
             else:
                 g.remove((None, None, None))
                 g.close()
 
-        def __open_graph(gid):
+        def __open_graph(gid, loader, format):
             if provider is None:
-                return None
+                return loader(gid, format)
             else:
-                return provider.open(gid=gid)
+                return provider.create(gid=gid, loader=loader, format=format)
+
+        def __get_content(uri, format):
+            try:
+                # log.debug('[Dereference][START] {}'.format(uri))
+                response = requests.get(uri, headers={'Accept': _accept_mimes[format]}, timeout=30)
+            except requests.Timeout:
+                log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
+                return True
+            except UnicodeEncodeError:
+                log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
+                return True
+            except Exception:
+                log.debug('[Dereference][ERROR][GET] {}'.format(uri))
+                return True
+
+            if response.status_code == 200:
+                try:
+                    return StringIO.StringIO(response.content)
+                except SyntaxError:
+                    traceback.print_exc()
+                    log.error('[Dereference][ERROR][PARSE] {}'.format(uri))
+                    return False
+                except ValueError:
+                    traceback.print_exc()
+                    log.debug('[Dereference][ERROR][VAL] {}'.format(uri))
+                    return False
+                except DBNotFoundError:
+                    # Ignore this exception... it is raised due to a stupid problem with prefixes
+                    return True
+                except SAXParseException:
+                    traceback.print_exc()
+                    log.error('[Dereference][ERROR][SAX] {}'.format(uri))
+                    return False
+                except Exception:
+                    traceback.print_exc()
+                    log.error('[Dereference][ERROR] {}'.format(uri))
+                    return True
 
         def __dereference_uri(tg, uri):
 
             uri = uri.encode('utf-8')
 
             def treat_resource_content(parse_format):
-                g = __open_graph(uri)
+                g = __open_graph(uri, loader=__get_content, format=parse_format)
+                if isinstance(g, bool):
+                    return g
 
-                if g is None:
-                    try:
-                        # log.debug('[Dereference][START] {}'.format(uri))
-                        response = requests.get(uri, headers={'Accept': _accept_mimes[parse_format]}, timeout=30)
-                    except requests.Timeout:
-                        log.debug('[Dereference][TIMEOUT][GET] {}'.format(uri))
-                        return True
-                    except UnicodeEncodeError:
-                        log.debug('[Dereference][ERROR][ENCODE] {}'.format(uri))
-                        return True
-                    except Exception:
-                        log.debug('[Dereference][ERROR][GET] {}'.format(uri))
-                        return True
-
-                    if response.status_code == 200:
-                        try:
-                            # log.debug('Parsing {}-RDF from {}...'.format(parse_format, uri))
-                            g = __create_graph(gid=uri)
-                            g.parse(source=StringIO.StringIO(response.content), format=parse_format)
-                            # log.debug('RDF parse of {} done!'.format(uri))
-                            # log.debug('Trying to acquire lock for {}'.format(uri))
-                        except SyntaxError:
-                            log.error('[Dereference][ERROR][PARSE] {}'.format(uri))
-                            return False
-                        except ValueError:
-                            log.debug('[Dereference][ERROR][VAL] {}'.format(uri))
-                            return False
-                        except DBNotFoundError:
-                            log.error('[Dereference][ERROR][DB] {}'.format(uri))
-                            return False
-                        except SAXParseException:
-                            log.error('[Dereference][ERROR][SAX] {}'.format(uri))
-                            return False
-                        except Exception:
-                            traceback.print_exc()
-                            log.error('[Dereference][ERROR] {}'.format(uri))
-                            return True
-
-                lock_acquired = False
                 try:
-                    self.__resource_lock.acquire()
-                    lock_acquired = True
                     tg.get_context(uri).__iadd__(g)
-                    self.__resource_lock.release()
-                    # log.debug('[Dereference][OK] {}'.format(uri))
                     return True
-                except (KeyboardInterrupt, SystemError, SystemExit):
-                    if lock_acquired:
-                        self.__resource_lock.release()
-                    raise
                 finally:
                     if g is not None:
-                        __destroy_graph(g)
+                        __release_graph(g)
 
             """
             Load in a tree graph the set of triples contained in uri, trying to not deference the same uri
@@ -294,23 +286,11 @@ class PlanExecutor(object):
             :return:
             """
             loaded = False
-            self.__resource_lock.acquire()
-            if tg in self.__resource_queue and uri not in self.__resource_queue[tg]:
-                self.__resource_queue[tg].append(uri)
-                if len(self.__resource_queue[tg]) > workers * 10:  # TODO: Adjust this capacity properly
-                    tg.remove_context(tg.get_context(self.__resource_queue[tg].pop(0)))
-                self.__resource_lock.release()
-
-                for fmt in sorted(_accept_mimes.keys(), key=lambda x: x != self.__last_success_format):
-                    loaded = treat_resource_content(fmt)
-                    if loaded:
-                        self.__last_success_format = fmt
-                        break
-            else:
-                try:
-                    self.__resource_lock.release()
-                except RuntimeError:  # Raises when trying to release the lock but was not acquired
-                    pass
+            for fmt in sorted(_accept_mimes.keys(), key=lambda x: x != self.__last_success_format):
+                loaded = treat_resource_content(fmt)
+                if loaded:
+                    self.__last_success_format = fmt
+                    break
 
             if loaded and on_load is not None:
                 triples = list(tg.get_context(uri).triples((None, None, None)))
@@ -346,7 +326,7 @@ class PlanExecutor(object):
                         except KeyError:
                             pass
                         tg.close()
-                        __destroy_graph(tg)
+                        __release_graph(tg)
                     self.__plan_graph = None
                     self.__uri_cache = None
                     self.__node_spaces = None
@@ -510,7 +490,7 @@ class PlanExecutor(object):
 
                     # Prepare an dedicated graph for the current tree and a set of type triples (?s a Concept)
                     # to be evaluated retrospectively
-                    tree_graph = __create_graph(conjunctive=True)
+                    tree_graph = __create_graph()
 
                     try:
                         self.__resource_queue[tree_graph] = []
@@ -539,7 +519,7 @@ class PlanExecutor(object):
                                 for seed in s_seeds:
                                     __follow_node(tree, tree_graph, sp, seed)
                     finally:
-                        __destroy_graph(tree_graph)
+                        __release_graph(tree_graph)
 
                     if lazy and found_data:
                         break
