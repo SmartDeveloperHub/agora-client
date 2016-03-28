@@ -521,8 +521,8 @@ class PlanExecutor(object):
                     finally:
                         __release_graph(tree_graph)
 
-                        # if lazy and found_data:
-                        #     break
+                        if lazy and found_data and len(self.__spaces) == 1:
+                            break
 
                 self.__completed = True
 
