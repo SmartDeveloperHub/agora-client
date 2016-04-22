@@ -221,7 +221,11 @@ class PlanExecutor(object):
 
         def __open_graph(gid, loader, format):
             if provider is None:
-                return loader(gid, format)
+                content = loader(gid, format)
+                if not isinstance(content, bool):
+                    g = ConjunctiveGraph()
+                    g.parse(source=content, format=format)
+                    return g
             else:
                 return provider.create(gid=gid, loader=loader, format=format)
 
