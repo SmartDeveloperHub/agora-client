@@ -226,6 +226,7 @@ class PlanExecutor(object):
                     g = ConjunctiveGraph()
                     g.parse(source=content, format=format)
                     return g
+                return content
             else:
                 return provider.create(gid=gid, loader=loader, format=format)
 
