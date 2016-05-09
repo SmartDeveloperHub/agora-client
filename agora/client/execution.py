@@ -269,6 +269,9 @@ class PlanExecutor(object):
 
         def __dereference_uri(tg, uri):
 
+            if not isinstance(uri, URIRef):
+                return
+
             uri = uri.encode('utf-8')
 
             def treat_resource_content(parse_format):
@@ -307,7 +310,7 @@ class PlanExecutor(object):
                 __dereference_uri(tree_graph, seed)
                 seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
                 next_seeds.update(seed_pattern_objects)
-            except Exception, e:
+            except Exception as e:
                 traceback.print_exc()
                 log.warning(e.message)
 
@@ -364,7 +367,11 @@ class PlanExecutor(object):
                 Check if a node is a pattern node and has an object filter
                 """
                 p_node = list(self.__plan_graph.objects(subject=x, predicate=AGORA.byPattern))
-                return len(p_node) and 'filter_object' in self.__patterns[p_node.pop()]
+                try:
+                    p_node = p_node.pop()
+                    return 'filter_object' in self.__patterns[p_node] or 'filter_subject' in self.__patterns[p_node]
+                except IndexError:
+                    return False
 
             try:
                 # Get the sorted list of current node's successors
@@ -382,6 +389,7 @@ class PlanExecutor(object):
                         except IndexError:
                             link = None
 
+                        filter_next_seeds = set([])
                         next_seeds = set([])
                         # If the current node is a pattern node, it must search for triples to yield
                         for pattern in node_patterns:
@@ -391,6 +399,7 @@ class PlanExecutor(object):
 
                             subject_filter = self.__patterns[pattern].get('filter_subject', None)
                             if subject_filter is not None and seed != subject_filter:
+                                self.__subjects_to_ignore[pattern_space].add(seed)
                                 continue
 
                             pattern_link = self.__patterns[pattern].get('property', None)
@@ -402,7 +411,7 @@ class PlanExecutor(object):
                                     if on_plink is not None:
                                         on_plink(pattern_link, [seed], pattern_space)
 
-                                    apply_filter = True
+                                    seed_was_filtered = True
                                     try:
                                         for seed_object in list(
                                                 __process_pattern_link_seed(seed, tree_graph, pattern_link)):
@@ -412,10 +421,12 @@ class PlanExecutor(object):
                                                     'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
                                                 self.__fragment.add((seed, pattern_link))
                                                 __put_triple_in_queue(quad)
-                                                apply_filter = False
-                                        if obj_filter is not None and apply_filter:
+                                                seed_was_filtered = False
+                                                if isinstance(obj_filter, URIRef):
+                                                    filter_next_seeds.add(obj_filter)
+                                        if obj_filter is not None and seed_was_filtered:
                                             self.__subjects_to_ignore[pattern_space].add(seed)
-                                    except AttributeError, e:
+                                    except AttributeError as e:
                                         log.warning('Trying to find {} objects of {}: {}'.format(link, seed, e.message))
 
                             # If pattern is of type '?s a Concept'...
@@ -444,7 +455,7 @@ class PlanExecutor(object):
                                             else:
                                                 self.__fragment.add((seed_object, obj_type))
                                                 __put_triple_in_queue(type_triple)
-                                except AttributeError, e:
+                                except AttributeError as e:
                                     log.warning('Trying to find {} objects of {}: {}'.format(link, seed, e.message))
 
                         # If the current node is not a leaf... go on finding seeds for the successors
@@ -452,6 +463,9 @@ class PlanExecutor(object):
                             if on_link is not None:
                                 on_link(link, [seed], seed_space)
                             __process_link_seed(seed, tree_graph, link, next_seeds)
+
+                        if filter_next_seeds:
+                            next_seeds = set.intersection(next_seeds, filter_next_seeds)
 
                         chs = list(chunks(list(next_seeds), min(len(next_seeds), max(1, workers / 2))))
                         next_seeds.clear()
@@ -477,7 +491,7 @@ class PlanExecutor(object):
                             pass
             except Queue.Full:
                 stop_event.set()
-            except Exception, e:
+            except Exception as e:
                 traceback.print_exc()
                 log.error(e.message)
                 return
