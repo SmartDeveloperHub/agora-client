@@ -221,7 +221,7 @@ class PlanExecutor(object):
 
         def __open_graph(gid, loader, format):
             if provider is None:
-                content = loader(gid, format)
+                content, headers = loader(gid, format)
                 if not isinstance(content, bool):
                     g = ConjunctiveGraph()
                     g.parse(source=content, format=format)
@@ -246,7 +246,7 @@ class PlanExecutor(object):
 
             if response.status_code == 200:
                 try:
-                    return StringIO.StringIO(response.content)
+                    return StringIO.StringIO(response.content), response.headers
                 except SyntaxError:
                     traceback.print_exc()
                     log.error('[Dereference][ERROR][PARSE] {}'.format(uri))
