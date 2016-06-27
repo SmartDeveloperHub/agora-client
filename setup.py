@@ -28,7 +28,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="Agora-Client",
-    version="0.4.22",
+    version="0.5.0",
     author="Fernando Serena",
     author_email="fernando.serena@centeropenmiddleware.com",
     description="An Agora client for Python that requests and executes search plans for graph patterns",
