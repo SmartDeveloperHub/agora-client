@@ -24,15 +24,14 @@
 
 import Queue
 import StringIO
+import gc
 import logging
 import multiprocessing
 import traceback
-from threading import RLock, Thread, Event
-from xml.sax import SAXParseException
-
-import gc
 from _bsddb import DBNotFoundError
 from datetime import datetime as dt
+from threading import RLock, Thread, Event
+from xml.sax import SAXParseException
 
 import requests
 from agora.client.namespaces import AGORA
@@ -304,23 +303,26 @@ class PlanExecutor(object):
                 triples = list(tg.get_context(uri).triples((None, None, None)))
                 on_load(uri, triples)
 
-        def __process_link_seed(seed, tree_graph, link, next_seeds):
+        def __process_link_seed(seed, tree_graph, link, next_seeds, expected_types=None):
             __check_stop()
             try:
                 __dereference_uri(tree_graph, seed)
-                seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
-                next_seeds.update(seed_pattern_objects)
+                if expected_types is None or any([(seed, RDF.type, t) in tree_graph for t in expected_types]):
+                    seed_pattern_objects = tree_graph.objects(subject=seed, predicate=link)
+                    next_seeds.update(seed_pattern_objects)
             except Exception as e:
                 traceback.print_exc()
                 log.warning(e.message)
 
-        def __process_pattern_link_seed(seed, tree_graph, pattern_link):
+        def __process_pattern_link_seed(seed, tree_graph, pattern_link, expected_types=None):
             __check_stop()
             try:
                 __dereference_uri(tree_graph, seed)
             except:
                 pass
-            seed_pattern_objects = tree_graph.objects(subject=seed, predicate=pattern_link)
+            seed_pattern_objects = set([])
+            if expected_types is None or any([(seed, RDF.type, t) in tree_graph for t in expected_types]):
+                seed_pattern_objects = tree_graph.objects(subject=seed, predicate=pattern_link)
             return seed_pattern_objects
 
         def __check_stop():
@@ -383,6 +385,7 @@ class PlanExecutor(object):
                     if seed_space in self.__node_spaces[n]:
                         node_patterns = self.__node_patterns.get(n, [])
 
+                        expected_types = list(self.__plan_graph.objects(subject=n, predicate=AGORA.expectedType))
                         # In case the node is not a leaf, 'onProperty' tells which is the next link to follow
                         try:
                             link = list(self.__plan_graph.objects(subject=n, predicate=AGORA.onProperty)).pop()
@@ -414,8 +417,10 @@ class PlanExecutor(object):
                                     seed_was_filtered = True
                                     try:
                                         for seed_object in list(
-                                                __process_pattern_link_seed(seed, tree_graph, pattern_link)):
+                                                __process_pattern_link_seed(seed, tree_graph, pattern_link,
+                                                                            expected_types=expected_types)):
                                             __check_stop()
+
                                             quad = (pattern, seed, pattern_link, seed_object)
                                             if obj_filter is None or u''.join(seed_object).encode(
                                                     'utf-8') == u''.join(obj_filter.toPython()).encode('utf-8'):
@@ -462,7 +467,7 @@ class PlanExecutor(object):
                         if link is not None and seed not in self.__subjects_to_ignore[seed_space]:
                             if on_link is not None:
                                 on_link(link, [seed], seed_space)
-                            __process_link_seed(seed, tree_graph, link, next_seeds)
+                            __process_link_seed(seed, tree_graph, link, next_seeds, expected_types=expected_types)
 
                         if filter_next_seeds:
                             next_seeds = set.intersection(next_seeds, filter_next_seeds)
@@ -539,9 +544,6 @@ class PlanExecutor(object):
                                     __follow_node(tree, tree_graph, sp, seed)
                     finally:
                         __release_graph(tree_graph)
-
-                        if lazy and found_data and len(self.__spaces) == 1:
-                            break
 
                 self.__completed = True
 
